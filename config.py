@@ -34,7 +34,7 @@ class Configs:
         ##########################################
 
         # Null/background
-        self.filter_bg_only = False
+        self.no_filter_bg_only = False
 
         # Dataset
         self.val_ratio = 0.1
@@ -105,7 +105,7 @@ class Configs:
         self.momentum = 0.9
         self.l2_coeff = 5e-4
         self.grad_clip = 5.0
-        self.num_epochs = 10
+        self.num_epochs = 100
 
         # Learning rate. A value of 0 means that option is disabled.
         self.lr = 1e-3

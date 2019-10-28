@@ -9,10 +9,9 @@ from torch.utils.data import Dataset, Subset
 from torchvision import transforms
 
 from config import cfg
+from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.utils import Splits
 from lib.utils import Timer
-
-from lib.dataset.hoi_dataset import HoiDataset
 
 
 class AbstractHoiDatasetSplit(Dataset):
@@ -131,14 +130,14 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         if self.split == Splits.TEST:
             ds = self
         else:
-            if cfg.filter_bg_only:
-                ds = Subset(self, self.non_empty_split_imgs)
-            else:
+            if cfg.no_filter_bg_only:
                 if self.image_inds is None:
                     assert self.split != Splits.VAL
                     ds = self
                 else:
                     ds = Subset(self, self.image_inds)
+            else:
+                ds = Subset(self, self.non_empty_split_imgs)
         data_loader = torch.utils.data.DataLoader(
             dataset=ds,
             batch_size=batch_size,
@@ -180,12 +179,12 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         # Split train/val if needed
         train_split = cls(split=Splits.TRAIN, full_dataset=full_dataset, object_inds=obj_inds, action_inds=act_inds)
         if cfg.val_ratio > 0:
-            if cfg.filter_bg_only:
-                num_imgs = len(train_split.non_empty_split_imgs)
-                image_ids = train_split.non_empty_split_imgs
-            else:
+            if cfg.no_filter_bg_only:
                 num_imgs = len(full_dataset.split_filenames[Splits.TRAIN])
                 image_ids = np.arange(num_imgs)
+            else:
+                num_imgs = len(train_split.non_empty_split_imgs)
+                image_ids = train_split.non_empty_split_imgs
             num_train_imgs = num_imgs - int(num_imgs * cfg.val_ratio)
 
             train_image_ids = np.random.choice(image_ids, size=num_train_imgs, replace=False)
