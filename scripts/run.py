@@ -29,7 +29,7 @@ class Launcher:
             try:  # PyCharm debugging
                 print('Starting remote debugging (resume from debug server)')
                 import pydevd_pycharm
-                pydevd_pycharm.settrace('130.88.195.105', port=16003, stdoutToServer=True, stderrToServer=True)
+                pydevd_pycharm.settrace('130.88.195.105', port=16002, stdoutToServer=True, stderrToServer=True)
                 print('Remote debugging activated.')
             except:
                 print('Remote debugging failed.')
