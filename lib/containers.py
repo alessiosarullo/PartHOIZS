@@ -6,12 +6,14 @@ import torch
 
 class Prediction:
     def __init__(self, prediction_dict=None):
+        self.img_fn = None
         self.obj_im_inds = None  # type: Union[None, np.ndarray]
         self.obj_boxes = None  # type: Union[None, np.ndarray]
         self.obj_scores = None  # type: Union[None, np.ndarray]
         self.ho_img_inds = None  # type: Union[None, np.ndarray]
         self.ho_pairs = None  # type: Union[None, np.ndarray]
         self.action_scores = None  # type: Union[None, np.ndarray]
+        self.part_action_scores = None  # type: Union[None, np.ndarray]
         self.hoi_scores = None  # type: Union[None, np.ndarray]
 
         if prediction_dict is not None:

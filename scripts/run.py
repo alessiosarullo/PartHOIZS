@@ -11,9 +11,9 @@ import torch.nn as nn
 from config import cfg
 from lib.containers import PrecomputedMinibatch
 from lib.containers import Prediction
-from lib.dataset.hico import HicoSplit
+from lib.dataset.hico_hake import HicoHakeKPSplit
 from lib.dataset.utils import Splits
-from lib.eval.evaluator_img import EvaluatorImg
+from lib.eval.part_evaluator_img import PartEvaluatorImg
 from lib.models.abstract_model import AbstractModel
 from lib.running_stats import RunningStats
 from lib.utils import Timer
@@ -29,7 +29,7 @@ class Launcher:
             try:  # PyCharm debugging
                 print('Starting remote debugging (resume from debug server)')
                 import pydevd_pycharm
-                pydevd_pycharm.settrace('130.88.195.105', port=16002, stdoutToServer=True, stderrToServer=True)
+                pydevd_pycharm.settrace('130.88.195.105', port=16008, stdoutToServer=True, stderrToServer=True)
                 print('Remote debugging activated.')
             except:
                 print('Remote debugging failed.')
@@ -80,7 +80,7 @@ class Launcher:
                 except KeyError:
                     pass
 
-        splits = HicoSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+        splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
         self.train_split, self.val_split, self.test_split = splits[Splits.TRAIN], splits[Splits.VAL], splits[Splits.TEST]
 
         # Model
@@ -210,7 +210,7 @@ class Launcher:
                 batch.iter = self.curr_train_iter
             except AttributeError:
                 # type: List
-                batch[2].extend([epoch_idx, self.curr_train_iter])
+                batch[-1].extend([epoch_idx, self.curr_train_iter])
 
             stats.batch_tic()
             batch_loss = self.loss_batch(batch, stats, optimizer)
@@ -300,7 +300,7 @@ class Launcher:
                     pickle.dump(watched_values, f)
 
         test_interactions = None
-        evaluator = EvaluatorImg(data_loader.dataset)
+        evaluator = PartEvaluatorImg(data_loader.dataset)
         evaluator.evaluate_predictions(all_predictions)
         evaluator.save(cfg.eval_res_file)
         metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)

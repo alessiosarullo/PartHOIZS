@@ -1,5 +1,7 @@
 from typing import Dict, Type, Set
 
+import numpy as np
+
 from lib.models.abstract_model import AbstractModel
 
 try:

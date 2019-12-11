@@ -5,27 +5,27 @@ import sys
 from typing import List, Dict
 
 import matplotlib
-import numpy as np
-from matplotlib import pyplot as plt
-from sklearn.metrics import multilabel_confusion_matrix
-
-from analysis.utils import plot_mat
-from config import cfg
-from lib.dataset.hico import HicoSplit
-from lib.dataset.utils import Splits, interactions_to_mat
-from lib.containers import Prediction
 
 try:
     matplotlib.use('Qt5Agg')
     # sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg/standard/2019-08-23_19-05-46_SINGLE']
-    # sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg_sl/asl1/2019-08-24_09-59-28_SINGLE']
-    # sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg_Ra/Ra-10-03/2019-08-23_19-52-26_SINGLE']
-    sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg_sl_Ra/asl1_Ra-10-03/2019-08-24_10-04-30_SINGLE']
-    # sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg_Ra/Ra-1-03/2019-08-24_13-04-13_SINGLE']
-    # sys.argv[1:] = ['zs', '--save_dir', 'output/hicoall/zs185_gc_nobg_sl_Ra/asl1_Ra-1-03/2019-08-24_11-15-54_SINGLE']
+    sys.argv[1:] = ['pa', '--save_dir', 'output/base/po_trnull/standard/2019-12-02_16-40-23_SINGLE/']
 
 except ImportError:
     pass
+
+import numpy as np
+from sklearn.metrics import multilabel_confusion_matrix
+from matplotlib import pyplot as plt
+from PIL import Image
+
+from analysis.utils import plot_mat
+from config import cfg
+from lib.containers import Prediction
+from lib.dataset.hico import HicoSplit
+from lib.dataset.utils import Splits, interactions_to_mat
+from lib.dataset.hico_hake import HicoHake, HicoHakeKPSplit
+from analysis.visualise_utils import Visualizer
 
 
 class Analyser:
@@ -137,9 +137,50 @@ def zs_stats():
     # plt.show()
 
 
+def examine_part_action_predictions():
+    results = _setup_and_load()
+    hh = HicoHake()
+    split = Splits.TEST
+    # splits = HicoHakeKPSplit.get_splits()
+
+    gt_part_action_labels = hh.split_part_annotations[split]
+    gt_part_action_labels[gt_part_action_labels < 0] = 0
+
+    predict_part_act_scores = np.full_like(gt_part_action_labels, fill_value=np.nan)
+    for i, res in enumerate(results):
+        fname = hh.split_filenames[split][i]
+
+        path = os.path.join(hh.get_img_dir(split), fname)
+
+        try:
+            img = Image.open(path)
+        except:
+            print(f'Error on image {i}: {fname}.')
+            continue
+
+        prediction = Prediction(res)
+        pred_i = prediction.part_action_scores.squeeze()
+        predict_part_act_scores[i, :] = pred_i
+
+        gt_i = gt_part_action_labels[i, :]
+
+        print(f'Image {i:6d} ({fname}).')
+        for j, acts in enumerate(hh.actions_per_part):
+            print(f'{hh.parts[j].upper():10s} {"GT":10s}', ' '.join([f'{str(a) + ("*" if gt_i[a] else ""):>5s}' for a in acts]))
+            print(f'{"":10s} {"Pred":10s}', ' '.join([f'{s:5.3f}'.replace("0.000", "    0").replace("0.", " .") for s in pred_i[acts]]))
+        print()
+
+        visualizer = Visualizer(img)
+        plt.imshow(visualizer.output.get_image())
+        plt.show()
+
+    assert not np.any(np.isnan(predict_part_act_scores)) and np.all(predict_part_act_scores >= 0)
+
+
 def main():
     funcs = {
         'zs': zs_stats,
+        'pa': examine_part_action_predictions
     }
     print(sys.argv)
     parser = argparse.ArgumentParser()

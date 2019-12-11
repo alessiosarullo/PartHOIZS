@@ -83,9 +83,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         self.non_empty_split_imgs = np.flatnonzero(np.any(self.labels, axis=1))
 
     def filter_imgs(self, image_inds):
-        image_mask = np.zeros(self.full_dataset.split_annotations[self._data_split].shape[0], dtype=np.bool)
-        image_mask[image_inds] = True
-        self.non_empty_split_imgs = np.flatnonzero(np.any(self.labels, axis=1) & image_mask)
+        self.non_empty_split_imgs = np.intersect1d(self.non_empty_split_imgs, image_inds)
         self.image_inds = image_inds
 
     @property

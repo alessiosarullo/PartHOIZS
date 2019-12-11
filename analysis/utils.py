@@ -208,7 +208,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     return ax
 
 
-def colormap(rgb=False):
+def colormap(rgb=False, maximum=255):
     color_list = np.array(
         [
             0.000, 0.447, 0.741,
@@ -292,7 +292,7 @@ def colormap(rgb=False):
             1.000, 1.000, 1.000
         ]
     ).astype(np.float32)
-    color_list = color_list.reshape((-1, 3)) * 255
+    color_list = color_list.reshape((-1, 3)) * maximum
     if not rgb:
         color_list = color_list[:, ::-1]
     return color_list

@@ -59,24 +59,18 @@ class Configs:
         self.fl_gamma = 0.0  # gamma in focal loss
         self.meanc = False  # mean or sum over classes for BCE loss?
         self.csp = False  # Use cost-sensitive coefficients for positive examples
-        # Soft labels, score, loss, regularisation, cost-sensitive loss
+        self.cspbgc = 0.0  # Cost-sensitive coefficient for positive background (null) examples of part actions
+        self.cspc = 0.0  # Cost-sensitive coefficient for positive examples of part actions
+        # Soft labels, loss, regularisation, cost-sensitive loss
         self.osl = 0.0
-        self.osc = 1.0
         self.olc = 1.0
         self.opr = 0.0
         self.ocs = False
         #
         self.asl = 0.0
-        self.asc = 1.0
         self.alc = 1.0
         self.apr = 0.0
         self.acs = False
-        #
-        self.hsl = 0.0
-        self.hlc = 0.0
-        self.hsc = 0.0
-        self.hpr = 0.0
-        self.hcs = False
         # Regularisation
         self.grm = 0.3  # margin in graph regularisation
         self.grg = 0  # gamma in graph regularisation
@@ -94,6 +88,13 @@ class Configs:
         self.gcwemb = False
         self.gcdropout = 0.5
 
+        # Part
+        self.no_part = False
+        self.part_only = False
+        self.no_kp = False
+        self.sbmar = 0.0  # small boxes min area ratio
+        self.max_ppl = 0
+
         ##########################################
         # Optimiser options                      #
         ##########################################
@@ -105,7 +106,7 @@ class Configs:
         self.momentum = 0.9
         self.l2_coeff = 5e-4
         self.grad_clip = 5.0
-        self.num_epochs = 100
+        self.num_epochs = 50
 
         # Learning rate. A value of 0 means that option is disabled.
         self.lr = 1e-3
