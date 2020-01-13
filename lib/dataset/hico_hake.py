@@ -1,5 +1,6 @@
 import json
 import os
+import pickle
 from collections import namedtuple
 from typing import Dict, List
 
@@ -8,10 +9,11 @@ import numpy as np
 import torch
 
 from config import cfg
+from lib.bbox_utils import compute_ious
 from lib.dataset.hico import Hico, HicoSplit
 from lib.dataset.utils import Splits, get_hico_to_coco_mapping, COCO_CLASSES
 from lib.utils import Timer
-from lib.bbox_utils import compute_ious
+from PIL import Image
 
 
 class PrecomputedFilesHandler:
@@ -157,6 +159,8 @@ class HicoHakeKPSplit(HicoHakeSplit):
             fname_ids = PrecomputedFilesHandler.get(self.keypoints_fn, 'fname_ids')
             self.pc_person_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'boxes')
             self.pc_coco_kps = PrecomputedFilesHandler.get(self.keypoints_fn, 'keypoints')
+            assert np.all(np.min(self.pc_coco_kps[:, :, :2], axis=1) >= self.pc_person_boxes[:, :2])
+            assert np.all(np.max(self.pc_coco_kps[:, :, :2], axis=1) <= self.pc_person_boxes[:, 2:4])
             self.pc_person_scores = PrecomputedFilesHandler.get(self.keypoints_fn, 'scores')
             self.pc_hake_kp_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_boxes')
             self.pc_hake_kp_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats')
@@ -165,8 +169,13 @@ class HicoHakeKPSplit(HicoHakeSplit):
                 fname_id_to_kp_inds.setdefault(fid, []).append(i)
             fname_id_to_kp_inds = {k: np.array(sorted(v)) for k, v in fname_id_to_kp_inds.items()}
 
-            self.pc_img_data = []  # type: List[Dict]
+            # Useful quantities
+            self.num_hake_kps = self.pc_hake_kp_boxes.shape[1]
             self.pc_kp_feats_dim = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats').shape[-1]
+
+            # Cache
+            self.pc_img_data = []  # type: List[Dict]
+
             imgs_with_kps = []
             for i, fname in enumerate(self.full_dataset.split_filenames[self._data_split]):
                 fname_id = int(os.path.splitext(fname)[0].split('_')[-1])
@@ -184,8 +193,13 @@ class HicoHakeKPSplit(HicoHakeSplit):
                         if 0 < cfg.max_ppl < len(im_person_inds):
                             im_person_scores = self.pc_person_scores[im_person_inds]
                             inds = np.argsort(im_person_scores)[::-1]
-                            im_person_inds = np.sort(im_person_inds[inds[:cfg.max_ppl]])
-                            assert len(im_person_inds) == cfg.max_ppl
+                            im_person_scores = im_person_scores[inds]
+                            keep = im_person_scores > cfg.min_ppl_score
+                            keep[0] = True  # always keep at least one person
+                            if cfg.max_ppl > 0:
+                                keep[cfg.max_ppl:] = False
+                            im_person_inds = np.sort(im_person_inds[inds][keep])
+                            assert len(im_person_inds) == cfg.max_ppl or np.all(im_person_scores[keep][1:] > cfg.min_ppl_score)
                         im_data['person_inds'] = im_person_inds
                         imgs_with_kps.append(i)
 
@@ -194,6 +208,64 @@ class HicoHakeKPSplit(HicoHakeSplit):
                             im_data['obj_inds'] = np.atleast_1d(obj_inds)
 
                 self.pc_img_data.append(im_data)
+            assert len(self.pc_img_data) == len(self.full_dataset.split_filenames[self._data_split])
+
+            if cfg.spcfmdim > 0:
+                fmap_dim = cfg.spcfmdim
+                cache_fn = os.path.join(cfg.cache_root, f'kp_boxes_obj_prox_fmap{fmap_dim}_{self._data_split.value}.pkl')
+                try:
+                    with open(cache_fn, 'rb') as f:
+                        self.kp_boxes_obj_proximity_fmaps, self.most_relevant_obj_per_kp_box = pickle.load(f)
+                except FileNotFoundError:
+                    self.kp_boxes_obj_proximity_fmaps = np.zeros((self.pc_hake_kp_boxes.shape[0],
+                                                                  self.pc_hake_kp_boxes.shape[1],
+                                                                  fmap_dim,
+                                                                  fmap_dim
+                                                                  ))
+                    self.most_relevant_obj_per_kp_box = np.full((self.pc_hake_kp_boxes.shape[0], self.pc_hake_kp_boxes.shape[1]), fill_value=-1)
+                    for i, im_data in enumerate(self.pc_img_data):
+                        try:
+                            im_person_inds = im_data['person_inds']
+                            im_obj_inds = im_data['obj_inds']
+                        except KeyError:
+                            continue
+                        img_wh = self.img_dims[i]
+                        im_obj_boxes = np.round(self.pc_obj_boxes[im_obj_inds])
+
+                        norm_dists = []
+                        for obox in im_obj_boxes:
+                            norm_dist_on_axes = []
+                            for c in range(2):  # x, y
+                                img_size = img_wh[c]
+                                proj_on_axis = np.arange(obox[0 + c], obox[2 + c] + 1)
+                                norm_dist_on_axis = np.min(np.abs(np.arange(img_size)[:, None] - proj_on_axis[None, :]), axis=1) / img_size
+                                assert np.all((0 <= norm_dist_on_axis) & (norm_dist_on_axis < 1))
+                                if c == 0:
+                                    tiled_dist = np.tile(norm_dist_on_axis, [img_wh[1], 1])
+                                else:
+                                    tiled_dist = np.tile(norm_dist_on_axis, [img_wh[0], 1]).T
+                                norm_dist_on_axes.append(tiled_dist)
+                            norm_dist = np.max(np.stack(norm_dist_on_axes, axis=2), axis=2)
+                            norm_dists.append(norm_dist)
+                        normalised_proximity_from_objs = 1 - np.stack(norm_dists, axis=2)
+                        assert np.all((0 < normalised_proximity_from_objs) & (normalised_proximity_from_objs <= 1))
+
+                        for prs_idx in im_person_inds:
+                            pboxes = self.pc_hake_kp_boxes[prs_idx, :, :4]
+                            ious = compute_ious(pboxes, im_obj_boxes)
+                            box_idx_per_kp = np.argmax(ious, axis=1)
+                            for kpidx, pbox in enumerate(pboxes.astype(np.int)):
+                                best_obj_idx = box_idx_per_kp[kpidx]
+                                kp_box_proximity_to_obj = normalised_proximity_from_objs[pbox[1]:pbox[3] + 1, pbox[0]:pbox[2] + 1, best_obj_idx]
+
+                                # Note: this does NOT preserve aspect ratio
+                                kp_box_proximity_to_obj_fmap = np.asarray(Image.fromarray(kp_box_proximity_to_obj).
+                                                                          resize((fmap_dim, fmap_dim), Image.BILINEAR))
+
+                                self.kp_boxes_obj_proximity_fmaps[prs_idx, kpidx] = kp_box_proximity_to_obj_fmap
+                                self.most_relevant_obj_per_kp_box[prs_idx, kpidx] = im_obj_inds[best_obj_idx]
+                    with open(cache_fn, 'wb') as f:
+                        pickle.dump((self.kp_boxes_obj_proximity_fmaps, self.most_relevant_obj_per_kp_box), f)
 
             self.non_empty_split_imgs = np.intersect1d(self.non_empty_split_imgs, np.array(imgs_with_kps))
         except OSError:
@@ -205,6 +277,7 @@ class HicoHakeKPSplit(HicoHakeSplit):
         Timer.get('GetBatch').tic()
         idxs = np.array(idx_list)
         feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
+        orig_img_wh = torch.tensor(self.img_dims[idxs, :], dtype=torch.float32, device=device)
         person_inds, obj_inds = [], []
         for i, idx in enumerate(idxs):
             im_data = self.pc_img_data[idx]
@@ -218,26 +291,31 @@ class HicoHakeKPSplit(HicoHakeSplit):
                 except KeyError:
                     obj_inds.append(np.arange(0))
 
+        person_im_inds = obj_im_inds = []
+        person_boxes = person_kps = kp_boxes = kp_feats = None
+        obj_boxes = obj_feats = obj_scores = kp_box_prox_to_obj_fmaps = obj_scores_per_kp_box = None
         if person_inds:
             c_num_per_img = np.cumsum([pi.shape[0] for pi in person_inds])
-            person_im_inds = [np.arange((c_num_per_img[i-1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
+            person_im_inds = [np.arange((c_num_per_img[i - 1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
 
             c_num_per_img = np.cumsum([pi.shape[0] for pi in obj_inds])
-            obj_im_inds = [np.arange((c_num_per_img[i-1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
+            obj_im_inds = [np.arange((c_num_per_img[i - 1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
 
             person_inds = np.concatenate(person_inds)
             obj_inds = np.concatenate(obj_inds)
 
             person_boxes = torch.tensor(self.pc_person_boxes[person_inds], dtype=torch.float32, device=device)
+            person_kps = torch.tensor(self.pc_coco_kps[person_inds], dtype=torch.float32, device=device)
             kp_boxes = torch.tensor(self.pc_hake_kp_boxes[person_inds], dtype=torch.float32, device=device)
             kp_feats = torch.tensor(self.pc_hake_kp_feats[person_inds], dtype=torch.float32, device=device)
             obj_boxes = torch.tensor(self.pc_obj_boxes[obj_inds], dtype=torch.float32, device=device)
             obj_scores = torch.tensor(self.pc_obj_scores[obj_inds], dtype=torch.float32, device=device)
             obj_feats = torch.tensor(self.pc_obj_feats[obj_inds], dtype=torch.float32, device=device)
-        else:
-            person_im_inds = obj_im_inds = []
-            person_boxes = kp_boxes = kp_feats = None
-            obj_boxes = obj_feats = obj_scores = None
+            if cfg.spcfmdim > 0:
+                kp_box_prox_to_obj_fmaps = torch.tensor(self.kp_boxes_obj_proximity_fmaps[person_inds], dtype=torch.float32, device=device)
+                inds = self.most_relevant_obj_per_kp_box[person_inds]
+                obj_scores_per_kp_box = np.where((inds >= 0)[:, :, None], self.pc_obj_scores[inds, :], 0)
+                obj_scores_per_kp_box = torch.tensor(obj_scores_per_kp_box, dtype=torch.float32, device=device)
 
         if self.split != Splits.TEST:
             labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
@@ -247,9 +325,9 @@ class HicoHakeKPSplit(HicoHakeSplit):
 
         Timer.get('GetBatch').toc()
         mb = namedtuple('Minibatch', ['img_attrs', 'person_attrs', 'obj_attrs', 'img_labels', 'part_labels', 'other'])
-        return mb(img_attrs=feats,
-                  person_attrs=[person_im_inds, person_boxes, kp_boxes, kp_feats],
-                  obj_attrs=[obj_im_inds, obj_boxes, obj_scores, obj_feats],
+        return mb(img_attrs=[feats, orig_img_wh],
+                  person_attrs=[person_im_inds, person_boxes, person_kps, kp_boxes, kp_feats],
+                  obj_attrs=[obj_im_inds, obj_boxes, obj_scores, obj_feats, kp_box_prox_to_obj_fmaps, obj_scores_per_kp_box],
                   img_labels=labels, part_labels=part_labels,
                   other=[])
 

@@ -18,6 +18,7 @@ def get_args():
     parser.add_argument('--no_bb', default=False, action='store_true')
     parser.add_argument('--no_kp', default=False, action='store_true')
     parser.add_argument('--obb', default=False, action='store_true')
+    parser.add_argument('--pbb', default=False, action='store_true')
     return parser.parse_args()
 
 
@@ -41,6 +42,8 @@ def vis_hico_hake_kps(args):
         folder += ['kps']
     if args.obb:
         folder += ['obbs']
+    if args.pbb:
+        folder += ['pbbs']
     if not folder:
         folder = ['img']
     save_dir = os.path.join('analysis', 'output', 'vis', 'gt', '_'.join(folder), split.value)
@@ -72,6 +75,10 @@ def vis_hico_hake_kps(args):
             person_kps = hhkps.pc_coco_kps[person_inds]
             kp_boxes = hhkps.pc_hake_kp_boxes[person_inds].reshape(-1, 5)
             assert kp_boxes.shape[0] == person_boxes.shape[0] * len(hh.keypoints)
+
+            if args.pbb:
+                scores = hhkps.pc_person_scores[person_inds]
+                vis_output = visualizer.overlay_instances(boxes=person_boxes, labels=[f'{s:.2f}'.lstrip('0') for s in scores], alpha=0.7)
 
             if args.obb:
                 try:

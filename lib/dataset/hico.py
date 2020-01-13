@@ -1,6 +1,8 @@
 import os
 import pickle
 
+import imagesize
+from PIL import Image, ImageOps
 import numpy as np
 from scipy.io import loadmat
 
@@ -13,6 +15,8 @@ from lib.dataset.utils import Splits
 class HicoSplit(HoiDatasetSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
         super(HicoSplit, self).__init__(split, full_dataset, object_inds, action_inds)
+        self.full_dataset = self.full_dataset  # type: Hico
+        self.img_dims = self.full_dataset.split_img_dims[self._data_split]
 
     def _get_precomputed_feats_fn(self, split):
         return cfg.precomputed_feats_format % ('hico', 'resnet152', split.value)
@@ -43,6 +47,7 @@ class Hico(HoiDataset):
         self.split_filenames = driver.split_filenames
         self.split_annotations = annotations_per_split
         self.split_img_dir = driver.split_img_dir
+        self.split_img_dims = driver.split_img_dims  # (w, h)
 
     @property
     def human_class(self) -> int:
@@ -81,8 +86,10 @@ class HicoDriver:
 
         self.data_dir = os.path.join(cfg.data_root, 'HICO')
         self.path_pickle_annotation_file = os.path.join(self.data_dir, 'annotations.pkl')
+        self.path_pickle_img_dim_file = os.path.join(self.data_dir, 'img_dims.pkl')
         self.null_interaction = '__no_interaction__'
 
+        # Annotations
         train_annotations, train_fns, test_annotations, test_fns, interaction_list, wn_pred_dict, pred_dict = self.load_annotations()
         self.split_img_dir = {Splits.TRAIN: os.path.join(self.data_dir, 'images', 'train2015'),
                               Splits.TEST: os.path.join(self.data_dir, 'images', 'test2015')}
@@ -91,6 +98,7 @@ class HicoDriver:
         self.interaction_list = interaction_list
         self.wn_predicate_dict = wn_pred_dict
         self.predicate_dict = pred_dict
+        self.split_img_dims = self.load_img_dims()
 
     def load_annotations(self):
         try:
@@ -141,6 +149,32 @@ class HicoDriver:
                 inter['obj'] = 'hair_dryer'
 
         return train_annotations, train_fns, test_annotations, test_fns, interaction_list, wn_pred_dict, pred_dict
+
+    def load_img_dims(self, use_imagesize=False):
+        try:
+            with open(self.path_pickle_img_dim_file, 'rb') as f:
+                split_img_dims = pickle.load(f)
+        except FileNotFoundError:
+            if use_imagesize:
+                # This doesn't work if the image is rotated.
+                split_img_dims = {split: np.array([imagesize.get(os.path.join(self.split_img_dir[split], fn)) for fn in fns])
+                                  for split, fns in self.split_filenames.items()}
+            else:
+                split_img_dims = {}
+                for split, fns in self.split_filenames.items():
+                    all_img_dims = []
+                    for fn in fns:
+                        image = Image.open(os.path.join(self.split_img_dir[split], fn))
+                        try:
+                            image = ImageOps.exif_transpose(image)
+                        except TypeError:
+                            pass
+                        img_wh = np.asarray(image).shape[:2][::-1]
+                        all_img_dims.append(img_wh)
+                    split_img_dims[split] = np.array(all_img_dims)
+            with open(self.path_pickle_img_dim_file, 'wb') as f:
+                pickle.dump(split_img_dims, f)
+        return split_img_dims
 
     @staticmethod
     def parse_interaction_list(src_interaction_list):
@@ -203,4 +237,5 @@ class HicoDriver:
 
 
 if __name__ == '__main__':
-    Hico()
+    h = Hico()
+    print('Done.')

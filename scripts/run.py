@@ -14,6 +14,7 @@ from lib.containers import Prediction
 from lib.dataset.hico_hake import HicoHakeKPSplit
 from lib.dataset.utils import Splits
 from lib.eval.part_evaluator_img import PartEvaluatorImg
+from lib.eval.evaluator_img import EvaluatorImg
 from lib.models.abstract_model import AbstractModel
 from lib.running_stats import RunningStats
 from lib.utils import Timer
@@ -299,50 +300,61 @@ class Launcher:
                 with open(cfg.watched_values_file, 'wb') as f:
                     pickle.dump(watched_values, f)
 
-        test_interactions = None
-        evaluator = PartEvaluatorImg(data_loader.dataset)
-        evaluator.evaluate_predictions(all_predictions)
-        evaluator.save(cfg.eval_res_file)
-        metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
-        if cfg.seenf >= 0:
-            def get_metrics(_interactions):
-                if test_interactions is not None:
-                    _interactions = set(_interactions) & set(test_interactions)
-                return evaluator.output_metrics(interactions_to_keep=sorted(_interactions))
+        part_evaluator = PartEvaluatorImg(data_loader.dataset)
+        part_evaluator.evaluate_predictions(all_predictions)
+        part_evaluator.save(cfg.part_eval_res_file)
+        part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
 
-            detailed_metric_dicts = []
+        if cfg.part_only:
+            metric_dict = part_metric_dict
+        else:
+            test_interactions = None
+            evaluator = EvaluatorImg(data_loader.dataset)
+            evaluator.evaluate_predictions(all_predictions)
+            evaluator.save(cfg.eval_res_file)
+            metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
+            assert not (set(part_metric_dict.keys()) & set(metric_dict.keys()))
+            metric_dict.update(part_metric_dict)
 
-            print('Trained on:')
-            seen_interactions = self.train_split.active_interactions
-            detailed_metric_dicts.append({f'tr_{k}': v for k, v in get_metrics(seen_interactions).items()})
+            if cfg.seenf >= 0:
+                def get_metrics(_interactions):
+                    if test_interactions is not None:
+                        _interactions = set(_interactions) & set(test_interactions)
+                    return evaluator.output_metrics(interactions_to_keep=sorted(_interactions))
 
-            print('Zero-shot:')
-            unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.active_interactions)
-            detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
+                detailed_metric_dicts = []
 
-            oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
-            unseen_objects = np.array(sorted(set(range(self.train_split.full_dataset.num_objects)) - set(self.train_split.active_objects)))
-            unseen_actions = np.array(sorted(set(range(self.train_split.full_dataset.num_actions)) - set(self.train_split.active_actions)))
+                print('Trained on:')
+                seen_interactions = self.train_split.active_interactions
+                detailed_metric_dicts.append({f'tr_{k}': v for k, v in get_metrics(seen_interactions).items()})
 
-            if unseen_objects.size > 0:
-                print('Unseen object, seen action:')
-                uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.active_actions]).tolist()) - {-1}
-                detailed_metric_dicts.append({f'zs_uo-sa_{k}': v for k, v in get_metrics(uo_sa_interactions).items()})
+                print('Zero-shot:')
+                unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.active_interactions)
+                detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
 
-            if unseen_actions.size > 0:
-                print('Seen object, unseen action:')
-                so_ua_interactions = set(np.unique(oa_mat[self.train_split.active_objects, :][:, unseen_actions]).tolist()) - {-1}
-                detailed_metric_dicts.append({f'zs_so-ua_{k}': v for k, v in get_metrics(so_ua_interactions).items()})
+                oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
+                unseen_objects = np.array(sorted(set(range(self.train_split.full_dataset.num_objects)) - set(self.train_split.active_objects)))
+                unseen_actions = np.array(sorted(set(range(self.train_split.full_dataset.num_actions)) - set(self.train_split.active_actions)))
 
-            if unseen_objects.size > 0 and unseen_actions.size > 0:
-                print('Unseen object, unseen action:')
-                uo_ua_interactions = set(np.unique(oa_mat[unseen_objects, :][:, unseen_actions]).tolist()) - {-1}
-                detailed_metric_dicts.append({f'zs_uo-ua_{k}': v for k, v in get_metrics(uo_ua_interactions).items()})
+                if unseen_objects.size > 0:
+                    print('Unseen object, seen action:')
+                    uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.active_actions]).tolist()) - {-1}
+                    detailed_metric_dicts.append({f'zs_uo-sa_{k}': v for k, v in get_metrics(uo_sa_interactions).items()})
 
-            for d in detailed_metric_dicts:
-                for k, v in d.items():
-                    assert k not in metric_dict
-                    metric_dict[k] = v
+                if unseen_actions.size > 0:
+                    print('Seen object, unseen action:')
+                    so_ua_interactions = set(np.unique(oa_mat[self.train_split.active_objects, :][:, unseen_actions]).tolist()) - {-1}
+                    detailed_metric_dicts.append({f'zs_so-ua_{k}': v for k, v in get_metrics(so_ua_interactions).items()})
+
+                if unseen_objects.size > 0 and unseen_actions.size > 0:
+                    print('Unseen object, unseen action:')
+                    uo_ua_interactions = set(np.unique(oa_mat[unseen_objects, :][:, unseen_actions]).tolist()) - {-1}
+                    detailed_metric_dicts.append({f'zs_uo-ua_{k}': v for k, v in get_metrics(uo_ua_interactions).items()})
+
+                for d in detailed_metric_dicts:
+                    for k, v in d.items():
+                        assert k not in metric_dict
+                        metric_dict[k] = v
 
         stats.update_stats({'metrics': {k: np.mean(v) for k, v in metric_dict.items()}})
         stats.log_stats(self.curr_train_iter, epoch_idx)

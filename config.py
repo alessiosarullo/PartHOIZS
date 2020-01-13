@@ -53,7 +53,7 @@ class Configs:
         self.repr_dim = 1024
 
         # General
-        self.train_null = False
+        self.train_null_act = False
 
         # Loss
         self.fl_gamma = 0.0  # gamma in focal loss
@@ -93,7 +93,10 @@ class Configs:
         self.part_only = False
         self.no_kp = False
         self.sbmar = 0.0  # small boxes min area ratio
-        self.max_ppl = 0
+        self.max_ppl = 3
+        self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
+        self.use_sk = False  # skeleton
+        self.spcfmdim = 0  # spatial configuration feature map dim used to compute attention over people
 
         ##########################################
         # Optimiser options                      #
@@ -165,6 +168,10 @@ class Configs:
     @property
     def prediction_file(self):
         return os.path.join(self.output_path, 'prediction_test.pkl')
+
+    @property
+    def part_eval_res_file(self):
+        return os.path.join(self.output_path, 'part_eval_test.pkl')
 
     @property
     def eval_res_file(self):

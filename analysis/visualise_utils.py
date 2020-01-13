@@ -533,6 +533,5 @@ class Visualizer:
         sorted_idxs = np.argsort(-areas).tolist()
         sorted_by_area = []
         for x in [boxes] + list(args):
-            # noinspection PyTypeChecker
-            sorted_by_area.append([x[k] for k in sorted_idxs])
+            sorted_by_area.append([x[k] for k in sorted_idxs] if x is not None else None)
         return sorted_by_area

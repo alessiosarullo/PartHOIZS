@@ -5,6 +5,27 @@ from torch.nn import functional
 from config import cfg
 
 
+class ResizeLongestEdge:
+    def __init__(self, max_size):
+        super().__init__()
+        self.max_size = max_size
+
+    def apply(self, *, img_w, img_h, boxes):
+        h, w = img_h, img_w
+        size = self.max_size
+
+        newh = torch.full_like(h, fill_value=size, device=boxes.device)
+        neww = torch.full_like(w, fill_value=size, device=boxes.device)
+        newh[h < w] = size * (h / w)[h < w]
+        neww[w < h] = size * (w / h)[w < h]
+        neww = torch.floor(neww + 0.5)
+        newh = torch.floor(newh + 0.5)
+
+        boxes[..., [0, 2]] *= (neww / w).view(-1, 1, 1)
+        boxes[..., [1, 3]] *= (newh / h).view(-1, 1, 1)
+        return neww.int(), newh.int(), boxes
+
+
 def bce_loss(logits, labels, pos_weights=None, reduce=True):
     if cfg.fl_gamma != 0:  # Focal loss
         gamma = cfg.fl_gamma
