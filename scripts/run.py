@@ -2,20 +2,23 @@ import datetime
 import os
 import pickle
 import random
+import shutil
 from typing import Union, List
 
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 from config import cfg
 from lib.containers import PrecomputedMinibatch
 from lib.containers import Prediction
-from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
 from lib.dataset.utils import Splits
-from lib.eval.part_evaluator_img import PartEvaluatorImg
 from lib.eval.evaluator_img import EvaluatorImg
+from lib.eval.part_evaluator_img import PartEvaluatorImg
 from lib.models.abstract_model import AbstractModel
+from lib.radam import RAdam
 from lib.running_stats import RunningStats
 from lib.utils import Timer
 from scripts.utils import print_params, get_all_models_by_name
@@ -23,14 +26,15 @@ from scripts.utils import print_params, get_all_models_by_name
 
 class Launcher:
     def __init__(self):
-        Timer.gpu_sync = cfg.sync
+        torch.multiprocessing.set_start_method('spawn')
         cfg.parse_args()
+        Timer.gpu_sync = cfg.sync
 
         if cfg.debug:
             try:  # PyCharm debugging
                 print('Starting remote debugging (resume from debug server)')
                 import pydevd_pycharm
-                pydevd_pycharm.settrace('130.88.195.105', port=16008, stdoutToServer=True, stderrToServer=True)
+                pydevd_pycharm.settrace('130.88.195.105', port=cfg.debug_port, stdoutToServer=True, stderrToServer=True)
                 print('Remote debugging activated.')
             except:
                 print('Remote debugging failed.')
@@ -40,24 +44,35 @@ class Launcher:
             cfg.load()
         cfg.print()
         self.detector = None  # type: Union[None, AbstractModel]
-        self.train_split, self.val_split, self.test_split = None, None, None
+        self.train_split = None  # type: Union[None, HicoHakeKPSplit]
+        self.val_split = None  # type: Union[None, HicoHakeKPSplit]
+        self.test_split = None  # type: Union[None, HicoHakeKPSplit]
         self.curr_train_iter = 0
         self.start_epoch = 0
 
     def run(self):
-        self.setup()
-        if cfg.eval_only:
-            print('Start eval:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            all_predictions = self.evaluate()
-            print('End eval:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        else:
+        try:
+            self.setup()
+            if cfg.eval_only:
+                print('Start eval:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                all_predictions = self.evaluate()
+                print('End eval:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            else:
+                try:
+                    os.remove(cfg.prediction_file)
+                except FileNotFoundError:
+                    pass
+                print('Start train:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                all_predictions = self.train()
+                print('End train:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            print(f'Exception raised. Removing "{cfg.output_path}".')
+            shutil.rmtree(cfg.output_path)
             try:
-                os.remove(cfg.prediction_file)
-            except FileNotFoundError:
+                os.removedirs(os.path.split(cfg.output_path.rstrip('/'))[0])
+            except OSError:
                 pass
-            print('Start train:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            all_predictions = self.train()
-            print('End train:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            raise
         with open(cfg.prediction_file, 'wb') as f:
             pickle.dump(all_predictions, f)
         print('Wrote results to %s.' % cfg.prediction_file)
@@ -74,7 +89,7 @@ class Launcher:
         # Load inds from configs. Note that these might be None after this step, which means all possible indices will be used.
         inds = {k: None for k in ['obj', 'act', 'hoi']}
         if cfg.seenf >= 0:
-            inds_dict = pickle.load(open(cfg.active_classes_file, 'rb'))
+            inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
             for k in ['obj', 'act', 'hoi']:
                 try:
                     inds[k] = sorted(inds_dict[Splits.TRAIN.value][k].tolist())
@@ -93,17 +108,13 @@ class Launcher:
         print_params(self.detector, breakdown=False)
 
         if cfg.resume:
-            try:
-                ckpt = torch.load(cfg.saved_model_file)
-                os.rename(cfg.saved_model_file, cfg.checkpoint_file)
-            except FileNotFoundError:
-                ckpt = torch.load(cfg.checkpoint_file)
+            ckpt = torch.load(cfg.checkpoint_file)
             self.detector.load_state_dict(ckpt['state_dict'])
             self.start_epoch = ckpt['epoch'] + 1
             self.curr_train_iter = ckpt['curr_iter'] + 1
             print(f'Continuing from epoch {self.start_epoch} @ iteration {self.curr_train_iter}.')
         elif cfg.eval_only:
-            ckpt = torch.load(cfg.saved_model_file)
+            ckpt = torch.load(cfg.best_model_file)
             self.detector.load_state_dict(ckpt['state_dict'])
 
     def get_optim(self):
@@ -116,10 +127,14 @@ class Launcher:
         if cfg.resume:
             params = [{'params': p, 'initial_lr': cfg.lr} for p in self.detector.parameters() if p.requires_grad]
 
-        if cfg.adam:
-            optimizer = torch.optim.Adam(params, weight_decay=cfg.l2_coeff, lr=cfg.lr, betas=(cfg.adamb1, cfg.adamb2))
-        else:
+        if cfg.sgd:
+            assert not cfg.radam
             optimizer = torch.optim.SGD(params, weight_decay=cfg.l2_coeff, lr=cfg.lr, momentum=cfg.momentum)
+        elif cfg.radam:
+            optimizer = RAdam(params, weight_decay=cfg.l2_coeff, lr=cfg.lr, betas=(cfg.adamb1, cfg.adamb2))
+        else:
+            assert not cfg.radam
+            optimizer = torch.optim.Adam(params, weight_decay=cfg.l2_coeff, lr=cfg.lr, betas=(cfg.adamb1, cfg.adamb2))
 
         lr_decay = cfg.lr_decay_period
         lr_warmup = cfg.lr_warmup
@@ -141,13 +156,13 @@ class Launcher:
 
         train_loader = self.train_split.get_loader(batch_size=cfg.batch_size, num_workers=cfg.nworkers)
         val_loader = self.val_split.get_loader(batch_size=cfg.batch_size)
-        test_loader = self.test_split.get_loader(batch_size=1)
+        test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
 
         training_stats = RunningStats(split=Splits.TRAIN, num_batches=len(train_loader),
                                       batch_size=train_loader.batch_size or train_loader.batch_sampler.batch_size)
         val_stats = RunningStats(split=Splits.VAL, num_batches=len(val_loader),
                                  batch_size=val_loader.batch_size or val_loader.batch_sampler.batch_size, history_window=len(val_loader))
-        test_stats = RunningStats(split=Splits.TEST, num_batches=len(self.test_split), batch_size=1, history_window=len(self.test_split))
+        test_stats = RunningStats(split=Splits.TEST, num_batches=len(test_loader), batch_size=cfg.batch_size, history_window=len(self.test_split))
 
         try:
             cfg.save()
@@ -174,13 +189,18 @@ class Launcher:
                             # Scheduler default behaviour is wrong: it gets called with epoch=0 twice, both at the beginning and after the first epoch
                             scheduler.step(epoch=epoch + 1)
 
+                    self.detector.train()
+                    torch.save({'epoch': epoch,
+                                'curr_iter': self.curr_train_iter,
+                                'state_dict': self.detector.state_dict()},
+                               cfg.checkpoint_file)
+
                     if val_loss < lowest_val_loss:  # save best model only
                         lowest_val_loss = val_loss
-                        self.detector.train()
                         torch.save({'epoch': epoch,
                                     'curr_iter': self.curr_train_iter,
                                     'state_dict': self.detector.state_dict()},
-                                   cfg.checkpoint_file)
+                                   cfg.best_model_file)
 
                     if epoch % cfg.eval_interval == 0 or epoch + 1 == cfg.num_epochs:
                         all_predictions = self.eval_epoch(epoch, test_loader, test_stats)
@@ -192,27 +212,13 @@ class Launcher:
         finally:
             training_stats.close_tensorboard_logger()
 
-        try:
-            os.remove(cfg.saved_model_file)
-        except FileNotFoundError:
-            pass
-        os.rename(cfg.checkpoint_file, cfg.saved_model_file)
-
         # noinspection PyUnboundLocalVariable
         return all_predictions
 
     def loss_epoch(self, epoch_idx, data_loader, stats: RunningStats, optimizer=None):
         stats.epoch_tic()
         epoch_loss = 0
-        for batch_idx, batch in enumerate(data_loader):
-            try:
-                # type: PrecomputedMinibatch
-                batch.epoch = epoch_idx
-                batch.iter = self.curr_train_iter
-            except AttributeError:
-                # type: List
-                batch[-1].extend([epoch_idx, self.curr_train_iter])
-
+        for batch_idx, batch in self.data_loader_generator(data_loader, epoch_idx):
             stats.batch_tic()
             batch_loss = self.loss_batch(batch, stats, optimizer)
             if optimizer is None:
@@ -220,7 +226,7 @@ class Launcher:
             stats.batch_toc()
 
             verbose = (batch_idx % (cfg.print_interval * (100 if optimizer is None else 1)) == 0)
-            if optimizer is not None:
+            if optimizer is not None:  # training
                 if batch_idx % cfg.log_interval == 0:
                     stats.log_stats(self.curr_train_iter, verbose=verbose,
                                     lr=optimizer.param_groups[0]['lr'], epoch=epoch_idx, batch=batch_idx)
@@ -266,7 +272,7 @@ class Launcher:
 
         return loss
 
-    def eval_epoch(self, epoch_idx, data_loader, stats: RunningStats):
+    def eval_epoch(self, epoch_idx, data_loader: DataLoader, stats: RunningStats):
         self.detector.eval()
 
         try:
@@ -279,10 +285,18 @@ class Launcher:
             watched_values = {}
 
             stats.epoch_tic()
-            for batch_idx, batch in enumerate(data_loader):
+            for batch_idx, batch in self.data_loader_generator(data_loader, epoch_idx):
                 stats.batch_tic()
-                prediction = self.detector(batch)  # type: Prediction
-                all_predictions.append(vars(prediction))
+                predictions = self.detector(batch)  # type: Prediction
+                if data_loader.batch_size > 1:
+                    predictions_v = vars(predictions)
+                    for i in range(data_loader.batch_size):
+                        try:
+                            all_predictions.append({k: v[[i]] for k, v in predictions_v.items() if v is not None})
+                        except IndexError:
+                            break
+                else:
+                    all_predictions.append(vars(predictions))
                 stats.batch_toc()
 
                 try:
@@ -291,30 +305,50 @@ class Launcher:
                 except AttributeError:
                     pass
 
-                if batch_idx % 20 == 0:
-                    torch.cuda.empty_cache()  # Otherwise after some epochs the GPU goes out of memory. Seems to be a bug in PyTorch 0.4.1.
-                if batch_idx % 1000 == 0:
+                # if batch_idx % 20 == 0:
+                #     torch.cuda.empty_cache()  # Otherwise after some epochs the GPU goes out of memory. Seems to be a bug in PyTorch 0.4.1.
+                if batch_idx % 10 == 0:
                     stats.print_times(epoch_idx, batch=batch_idx, curr_iter=self.curr_train_iter)
 
             if watched_values:
                 with open(cfg.watched_values_file, 'wb') as f:
                     pickle.dump(watched_values, f)
 
-        part_evaluator = PartEvaluatorImg(data_loader.dataset)
-        part_evaluator.evaluate_predictions(all_predictions)
-        part_evaluator.save(cfg.part_eval_res_file)
-        part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
+        metric_dict = {}
+        if not cfg.no_part:
+            print('Part states:')
+            part_evaluator = PartEvaluatorImg(data_loader.dataset)
+            part_evaluator.evaluate_predictions(all_predictions)
+            part_evaluator.save(cfg.eval_res_file_format % 'part')
+            part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
+            metric_dict.update(part_metric_dict)
+
+            hh = self.test_split.full_dataset  # type: HicoHake
+            null_interactions = np.flatnonzero([states[-1] for states in hh.states_per_part]).tolist()
+            part_interactiveness_metric_dict = part_evaluator.output_metrics(interactions_to_keep=null_interactions, compute_pos=False)
+            part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
+            assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
+            metric_dict.update(part_interactiveness_metric_dict)
 
         if cfg.part_only:
-            metric_dict = part_metric_dict
+            assert not cfg.no_part
         else:
             test_interactions = None
+
+            print('Interactions (all):')
             evaluator = EvaluatorImg(data_loader.dataset)
             evaluator.evaluate_predictions(all_predictions)
-            evaluator.save(cfg.eval_res_file)
-            metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
-            assert not (set(part_metric_dict.keys()) & set(metric_dict.keys()))
-            metric_dict.update(part_metric_dict)
+            evaluator.save(cfg.eval_res_file_format % 'hoi')
+            hoi_metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
+            hoi_metric_dict = {f'{k}': v for k, v in hoi_metric_dict.items()}
+            assert not (set(hoi_metric_dict.keys()) & set(metric_dict.keys()))
+            metric_dict.update(hoi_metric_dict)
+
+            null_interactions = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
+            interactiveness_metric_dict = evaluator.output_metrics(interactions_to_keep=null_interactions, compute_pos=False)
+            interactiveness_metric_dict = {f'HOI_interactiveness_{k}': v for k, v in interactiveness_metric_dict.items()}
+            assert not (set(interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
+            metric_dict.update(interactiveness_metric_dict)
 
             if cfg.seenf >= 0:
                 def get_metrics(_interactions):
@@ -324,26 +358,26 @@ class Launcher:
 
                 detailed_metric_dicts = []
 
-                print('Trained on:')
-                seen_interactions = self.train_split.active_interactions
+                print('Interactions (seen):')
+                seen_interactions = self.train_split.seen_interactions
                 detailed_metric_dicts.append({f'tr_{k}': v for k, v in get_metrics(seen_interactions).items()})
 
-                print('Zero-shot:')
-                unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.active_interactions)
+                print('Interactions (unseen):')
+                unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.seen_interactions)
                 detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
 
                 oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
-                unseen_objects = np.array(sorted(set(range(self.train_split.full_dataset.num_objects)) - set(self.train_split.active_objects)))
-                unseen_actions = np.array(sorted(set(range(self.train_split.full_dataset.num_actions)) - set(self.train_split.active_actions)))
+                unseen_objects = np.array(sorted(set(range(self.train_split.full_dataset.num_objects)) - set(self.train_split.seen_objects)))
+                unseen_actions = np.array(sorted(set(range(self.train_split.full_dataset.num_actions)) - set(self.train_split.seen_actions)))
 
                 if unseen_objects.size > 0:
                     print('Unseen object, seen action:')
-                    uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.active_actions]).tolist()) - {-1}
+                    uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.seen_actions]).tolist()) - {-1}
                     detailed_metric_dicts.append({f'zs_uo-sa_{k}': v for k, v in get_metrics(uo_sa_interactions).items()})
 
                 if unseen_actions.size > 0:
                     print('Seen object, unseen action:')
-                    so_ua_interactions = set(np.unique(oa_mat[self.train_split.active_objects, :][:, unseen_actions]).tolist()) - {-1}
+                    so_ua_interactions = set(np.unique(oa_mat[self.train_split.seen_objects, :][:, unseen_actions]).tolist()) - {-1}
                     detailed_metric_dicts.append({f'zs_so-ua_{k}': v for k, v in get_metrics(so_ua_interactions).items()})
 
                 if unseen_objects.size > 0 and unseen_actions.size > 0:
@@ -363,11 +397,22 @@ class Launcher:
         return all_predictions
 
     def evaluate(self):
-        test_stats = RunningStats(split=Splits.TEST, num_batches=len(self.test_split), batch_size=1, history_window=len(self.test_split),
+        test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
+        test_stats = RunningStats(split=Splits.TEST, num_batches=len(test_loader), batch_size=1, history_window=len(self.test_split),
                                   tboard_log=False)
-        test_loader = self.test_split.get_loader(batch_size=1)
         all_predictions = self.eval_epoch(None, test_loader, test_stats)
         return all_predictions
+
+    def data_loader_generator(self, data_loader, epoch_idx):
+        for batch_idx, batch in enumerate(data_loader):
+            try:
+                # type: PrecomputedMinibatch
+                batch.epoch = epoch_idx
+                batch.iter = self.curr_train_iter
+            except AttributeError:
+                # type: List
+                batch[-1].extend([epoch_idx, self.curr_train_iter])
+            yield batch_idx, batch
 
 
 def main():

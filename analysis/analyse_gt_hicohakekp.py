@@ -132,7 +132,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
     if compute:
         hhkps = HicoHakeKPSplit(split, full_dataset=hh)
 
-        all_obj_boxes = hhkps.pc_obj_boxes
+        all_obj_boxes = hhkps.obj_boxes
         all_obj_box_centers = np.stack((all_obj_boxes[:, 2] + all_obj_boxes[:, 0], all_obj_boxes[:, 3] + all_obj_boxes[:, 1]), axis=1) / 2
 
         n = len(hhkps) if args.num_imgs <= 0 else args.num_imgs
@@ -141,7 +141,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
             if idx % 1000 == 0:
                 print(f'Image {idx + 1}/{n}.')
 
-            im_data = hhkps.pc_img_data[idx]
+            im_data = hhkps.img_data_cache[idx]
             try:
                 person_inds = im_data['person_inds']
                 obj_inds = im_data['obj_inds']
@@ -150,17 +150,17 @@ def analyse_interactiveness(args, hh: HicoHake, split):
                 continue
 
             labels = hhkps.part_labels[idx, :]
-            per_part_interactiveness_labels = [labels[acts[-1]] == 0 for acts in hh.actions_per_part]
+            per_part_interactiveness_labels = [labels[acts[-1]] == 0 for acts in hh.states_per_part]
 
             img_wh = hhkps.img_dims[idx]
 
-            im_person_boxes = hhkps.pc_person_boxes[person_inds]
-            im_person_kps = hhkps.pc_coco_kps[person_inds]
-            im_kp_boxes = hhkps.pc_hake_kp_boxes[person_inds]
-            im_kp_feats = hhkps.pc_hake_kp_feats[person_inds]
-            im_obj_boxes = hhkps.pc_obj_boxes[obj_inds]
-            im_obj_scores = hhkps.pc_obj_scores[obj_inds]
-            im_obj_feats = hhkps.pc_obj_feats[obj_inds]
+            im_person_boxes = hhkps.person_boxes[person_inds]
+            im_person_kps = hhkps.coco_kps[person_inds]
+            im_kp_boxes = hhkps.hake_kp_boxes[person_inds]
+            im_kp_feats = hhkps.hake_kp_feats[person_inds]
+            im_obj_boxes = hhkps.obj_boxes[obj_inds]
+            im_obj_scores = hhkps.obj_scores[obj_inds]
+            im_obj_feats = hhkps.obj_feats[obj_inds]
             kp_box_prox_to_obj_fmaps = hhkps.kp_boxes_obj_proximity_fmaps[person_inds]
             im_relevant_obj_per_kp = hhkps.most_relevant_obj_per_kp_box[person_inds]
 
@@ -186,7 +186,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
 
             center_dist_to_obj_per_part = compute_center_dists(im_kp_boxes.copy(), kp_1hot_mask, all_obj_box_centers, im_relevant_obj_per_kp,
                                                                img_wh, hh)
-            edge_dist_to_obj_per_part = compute_edge_dists(im_kp_boxes.copy(), kp_1hot_mask, hhkps.pc_obj_boxes, im_relevant_obj_per_kp, img_wh, hh)
+            edge_dist_to_obj_per_part = compute_edge_dists(im_kp_boxes.copy(), kp_1hot_mask, hhkps.obj_boxes, im_relevant_obj_per_kp, img_wh, hh)
             obj_ious_per_part = compute_obj_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh)
             kp_ious_per_part = compute_kp_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh)
 
@@ -211,7 +211,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
     baselines = []
     labels = hh.split_part_annotations[split]
     for part_idx in range(hh.num_parts):
-        actions = hh.actions_per_part[part_idx]
+        actions = hh.states_per_part[part_idx]
         baselines.append(np.sum(labels[:, actions[:-1]].any(axis=1)) / labels.shape[0])
 
     for part_idx, stats_per_interactiveness in stats_per_interactiveness_per_part.items():
@@ -271,7 +271,7 @@ def analyse_obj_coverage(args, hh: HicoHake, split):
         if idx % 1000 == 0:
             print(f'Image {idx + 1}/{n}.')
 
-        im_data = hhkps.pc_img_data[idx]
+        im_data = hhkps.img_data_cache[idx]
         try:
             person_inds = im_data['person_inds']
             obj_inds = im_data['obj_inds']
@@ -279,7 +279,7 @@ def analyse_obj_coverage(args, hh: HicoHake, split):
             # print(f'No person/object data for image {idx}.')
             continue
 
-        im_obj_scores = hhkps.pc_obj_scores[obj_inds]
+        im_obj_scores = hhkps.obj_scores[obj_inds]
         if max_obj_per_img > 0:
             max_scores = im_obj_scores.max(axis=1)
             inds = np.argsort(max_scores)[::-1]

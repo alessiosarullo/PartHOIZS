@@ -1,3 +1,5 @@
+import sys
+import argparse
 import matplotlib
 import numpy as np
 from matplotlib import pyplot as plt
@@ -313,3 +315,27 @@ def postprocess_for_visualisation(boxes_ext, masks, union_boxes, img_infos):
 
     union_boxes = union_boxes / im_scale
     return boxes_with_scores, box_classes, masks, union_boxes
+
+
+def analysis_hub(funcs, *args, **kwargs):
+    print(sys.argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('func', type=str, choices=funcs.keys())
+    parser.add_argument('--debug', default=False, action='store_true')
+    namespace = parser.parse_known_args()
+    _args = vars(namespace[0])
+
+    if _args.get('debug', False):
+        try:  # PyCharm debugging
+            print('Starting remote debugging (resume from debug server)')
+            import pydevd_pycharm
+            pydevd_pycharm.settrace('130.88.195.105', port=16008, stdoutToServer=True, stderrToServer=True)
+            print('Remote debugging activated.')
+        except:
+            print('Remote debugging failed.')
+            raise
+
+    func = _args['func']
+    sys.argv = sys.argv[:1] + namespace[1]
+    print(sys.argv)
+    funcs[func](*args, **kwargs)

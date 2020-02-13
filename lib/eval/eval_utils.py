@@ -11,7 +11,7 @@ from lib.dataset.hico import HicoSplit
 class BaseEvaluator:
     def __init__(self, dataset_split, *args, **kwargs):
         self.dataset_split = dataset_split  # type: HicoSplit
-        self.full_dataset = dataset_split.full_dataset
+        self.full_dataset = self.dataset_split.full_dataset
         self.metrics = {}  # type: Dict[str, np.ndarray]
 
     @property
@@ -29,24 +29,25 @@ class BaseEvaluator:
     def evaluate_predictions(self, predictions: List[Dict]):
         raise NotImplementedError()
 
-    def output_metrics(self, sort=False, interactions_to_keep=None):
+    def output_metrics(self, sort=False, interactions_to_keep=None, compute_pos=True):
         mf = MetricFormatter()
 
         metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep)
 
-        # Same, but with null interaction filtered
-        no_null_interaction_mask = (self.full_dataset.interactions[:, 0] > 0)
-        if interactions_to_keep is None:
-            interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask).tolist())
-        else:
-            interaction_mask = np.zeros(self.full_dataset.num_interactions, dtype=bool)
-            interaction_mask[np.array(interactions_to_keep).astype(np.int)] = True
-            interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask & interaction_mask).tolist())
-        pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep, prefix='p')
+        if compute_pos:
+            # Same, but with null interaction filtered
+            no_null_interaction_mask = (self.full_dataset.interactions[:, 0] > 0)
+            if interactions_to_keep is None:
+                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask).tolist())
+            else:
+                interaction_mask = np.zeros(self.full_dataset.num_interactions, dtype=bool)
+                interaction_mask[np.array(interactions_to_keep).astype(np.int)] = True
+                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask & interaction_mask).tolist())
+            pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep, prefix='p')
 
-        for k, v in pos_metrics.items():
-            assert k not in metrics.keys()
-            metrics[k] = v
+            for k, v in pos_metrics.items():
+                assert k not in metrics.keys()
+                metrics[k] = v
         return metrics
 
     def _output_metrics(self, mformatter, sort, interactions_to_keep, prefix=''):

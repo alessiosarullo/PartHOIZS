@@ -9,18 +9,15 @@ from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel
 from lib.models.branches import Cache, \
     PartActionBranch, FrozenPartActionBranch, PartStateBranch, FrozenPartStateBranch, \
-    GcnObjectBranch, \
-    GcnActionBranch, ActionFromPartBranch, \
-    GcnHoiBranch, HoiFromObjBranch, HoiFromPoseBranch, HoiFromPartBranch, \
-    HoiUninteractivenessBranch
+    GcnObjectBranch, PretrainedObjectBranch, \
+    GcnActionBranch, PartToHoiGcnActionBranch, ActionFromPartWrapperBranch, \
+    GcnHoiBranch, \
+    HoiUninteractivenessBranch, \
+    PartInteractivenessActionWrapperBranch, TriheadActionBranch
 from lib.models.gcns import BipartiteGCN, HoiGCN
 
 
 class AbstractTriBranchModel(AbstractModel):
-    @classmethod
-    def get_cline_name(cls) -> str:
-        raise NotImplementedError
-
     def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
         super().__init__(dataset, **kwargs)
         assert not (cfg.no_part and cfg.part_only)
@@ -41,8 +38,7 @@ class AbstractTriBranchModel(AbstractModel):
             if self.zs_enabled:
                 print('Zero-shot enabled.')
                 self._init_gcn()
-            if not cfg.no_obj:
-                self._init_obj_branch()
+            self._init_obj_branch()
             self._init_act_branch()
             self._init_hoi_branch()
 
@@ -53,7 +49,10 @@ class AbstractTriBranchModel(AbstractModel):
             self.branches['part'] = PartActionBranch(dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
 
     def _init_obj_branch(self):
-        self.branches['obj'] = GcnObjectBranch(dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+        if cfg.ptos:
+            self.branches['obj'] = PretrainedObjectBranch(dataset=self.dataset, cache=self.cache)
+        else:
+            self.branches['obj'] = GcnObjectBranch(dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
 
     def _init_act_branch(self):
         pass
@@ -85,21 +84,17 @@ class AbstractTriBranchModel(AbstractModel):
             assert prediction.part_state_scores.shape[1] == self.dataset.full_dataset.num_part_states
         if not cfg.part_only:
             interactions = self.dataset.full_dataset.interactions
-            hoi_scores = []
 
-            if 'obj' in self.branches:
-                obj_scores = self.branches['obj'](x, inference)
-                hoi_scores.append(obj_scores[:, interactions[:, 1]])
+            obj_scores = self.branches['obj'](x, inference)
+            prediction.hoi_scores = obj_scores[:, interactions[:, 1]]
 
             if 'act' in self.branches:
                 act_scores = self.branches['act'](x, inference)
-                hoi_scores.append(act_scores[:, interactions[:, 0]])
+                prediction.hoi_scores *= act_scores[:, interactions[:, 0]]
 
             if 'hoi' in self.branches:
-                hoi_scores.append(self.branches['hoi'](x, inference))
-
-            assert hoi_scores
-            prediction.hoi_scores = np.prod(np.stack(hoi_scores, axis=0), axis=0)
+                hoi_scores = self.branches['hoi'](x, inference)
+                prediction.hoi_scores *= hoi_scores
         return prediction
 
     def _forward(self, x: Minibatch, inference=True):
@@ -115,8 +110,11 @@ class BaseModel(AbstractTriBranchModel):
         super().__init__(dataset, **kwargs)
         if not cfg.part_only:
             if cfg.ptres:
-                self.branches['act'] = ActionFromPartBranch(wrapped_branch=self.branches['act'],
-                                                            dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+                self.branches['act'] = ActionFromPartWrapperBranch(base_branch=self.branches['act'],
+                                                                   dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+            if cfg.pint:
+                self.branches['act'] = PartInteractivenessActionWrapperBranch(base_branch=self.branches['act'],
+                                                                              dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
 
     def _init_act_branch(self):
         self.branches['act'] = GcnActionBranch(dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
@@ -216,48 +214,46 @@ class PTHoiModel(AbstractTriBranchModel):
         super().__init__(dataset, **kwargs)
 
     def _init_obj_branch(self):
-        self.branches['obj'] = GcnObjectBranch(enable_gcn=False, dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+        if cfg.ptos:
+            self.branches['obj'] = PretrainedObjectBranch(dataset=self.dataset, cache=self.cache)
+        else:
+            self.branches['obj'] = GcnObjectBranch(enable_gcn=False, dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
 
     def _init_act_branch(self):
-        self.branches['act'] = ActionFromPartBranch(dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+        self.branches['act'] = ActionFromPartWrapperBranch(base_branch=None, dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
 
     def _forward(self, x: Minibatch, inference=True):
         pass
 
 
-class FromObjHoiModel(AbstractTriBranchModel):
+class Part2HoiModel(BaseModel):
     @classmethod
     def get_cline_name(cls):
-        return 'fromobj'
-
-    def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
-        super().__init__(dataset, **kwargs)
-
-    def _init_hoi_branch(self):
-        self.branches['hoi'] = HoiFromObjBranch(dataset=self.dataset, cache=self.cache, repr_dim=256)
-
-
-class FromPoseHoiModel(AbstractTriBranchModel):
-    @classmethod
-    def get_cline_name(cls):
-        return 'frompose'
-
-    def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
-        super().__init__(dataset, **kwargs)
-
-    def _init_hoi_branch(self):
-        self.branches['hoi'] = HoiFromPoseBranch(dataset=self.dataset, cache=self.cache, repr_dim=256)
-
-
-class FromPartHoiModel(HoiModel):
-    @classmethod
-    def get_cline_name(cls):
-        return 'frompart'
+        return 'part2hoi'
 
     def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
         assert not cfg.no_part
-        assert cfg.pbf
         super().__init__(dataset, **kwargs)
 
-    def _init_hoi_branch(self):
-        self.branches['hoi'] = HoiFromPartBranch(dataset=self.dataset, cache=self.cache, repr_dim=256)
+    def _init_act_branch(self):
+        self.branches['act'] = PartToHoiGcnActionBranch(part_repr_dim=self.branches['part'].final_part_repr_dim,
+                                                        use_ap_gcn=False,
+                                                        dataset=self.dataset,
+                                                        cache=self.cache,
+                                                        repr_dim=cfg.repr_dim)
+
+
+class TriModel(BaseModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'tri'
+
+    def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+
+    def _init_act_branch(self):
+        self.branches['act'] = TriheadActionBranch(part_repr_dim=self.branches['part'].final_part_repr_dim,
+                                                   use_ap_gcn=False,
+                                                   dataset=self.dataset,
+                                                   cache=self.cache,
+                                                   repr_dim=cfg.repr_dim)

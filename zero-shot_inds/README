@@ -1,4 +1,8 @@
 0: Kato's one. ~50% unseen objects, ~50% unseen actions.
 1: ~20% unseen actions.
+3: ~20% unseen actions, actions do not overlap with part actions.
+3_WRONG: ~33% unseen actions, actions DO overlap with part actions.
+4: ~50% unseen actions, actions do not overlap with part actions.
+5: ~66% unseen actions, actions do not overlap with part actions.
 6: 0 unseen object/actions (fake, for testing purpose).
 vghoi: For the VG-HOI dataset.

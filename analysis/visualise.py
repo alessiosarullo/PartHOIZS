@@ -1,12 +1,33 @@
 import argparse
 import os
+import sys
+import time
+
+import matplotlib
+
+try:
+    matplotlib.use('Qt5Agg')
+    sys.argv[1:] = ['hhkps', '--tin', '--max_ppl', '3', '--max_obj', '3',
+                    '--num_imgs', '1000'
+                    ]
+    # sys.argv[1:] = ['hhkps', '--vis',
+    #                 # '--no_kp',
+    #                 '--no_bb',
+    #                 '--num_imgs', '0'
+    #                 ]
+except ImportError:
+    pass
 
 import numpy as np
 from PIL import Image
 
+from matplotlib import pyplot as plt
+
 from analysis.visualise_utils import Visualizer
+from analysis.utils import analysis_hub
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
 from lib.dataset.utils import Splits
+from lib.dataset.tin_utils import get_next_sp_with_pose
 
 
 def get_args():
@@ -14,25 +35,19 @@ def get_args():
     parser.add_argument('--num_imgs', type=int, default=50)
     parser.add_argument('--kp_thr', type=float, default=0.05)
     parser.add_argument('--split', type=str, default='train')
-    parser.add_argument('--debug', default=False, action='store_true')
     parser.add_argument('--no_bb', default=False, action='store_true')
     parser.add_argument('--no_kp', default=False, action='store_true')
     parser.add_argument('--obb', default=False, action='store_true')
     parser.add_argument('--pbb', default=False, action='store_true')
+    parser.add_argument('--vis', default=False, action='store_true')
+    parser.add_argument('--tin', default=False, action='store_true')
+    parser.add_argument('--max_ppl', type=int, default=0)
+    parser.add_argument('--max_obj', type=int, default=0)
     return parser.parse_args()
 
 
-def vis_hico_hake_kps(args):
-    if args.debug:
-        try:  # PyCharm debugging
-            print('Starting remote debugging (resume from debug server)')
-            import pydevd_pycharm
-            pydevd_pycharm.settrace('130.88.195.105', port=16008, stdoutToServer=True, stderrToServer=True)
-            print('Remote debugging activated.')
-        except:
-            print('Remote debugging failed.')
-            raise
-
+def vis_hico_hake_kps():
+    args = get_args()
     split = Splits[args.split.upper()]
 
     folder = []
@@ -50,10 +65,17 @@ def vis_hico_hake_kps(args):
     os.makedirs(save_dir, exist_ok=True)
 
     hh = HicoHake()
-    hhkps = HicoHakeKPSplit(split, full_dataset=hh)
+    hhkps = HicoHakeKPSplit(split=split, full_dataset=hh, no_feats=True)
+
+    all_t = 0
 
     n = len(hhkps) if args.num_imgs <= 0 else args.num_imgs
     for idx in range(n):
+        # if idx != 27272:  # FIXME delete
+        #     continue
+        # rotated images:
+        #     'train2015': [18679, 19135, 27301, 28302, 32020],
+        #     'test2015': [3183, 7684, 8435, 8817],
         fname = hh.split_filenames[split][idx]
 
         path = os.path.join(hh.get_img_dir(split), fname)
@@ -65,46 +87,114 @@ def vis_hico_hake_kps(args):
             print(f'Error on image {idx}: {fname}.')
             continue
 
+        # Print annotations
+        img_anns = hh.split_annotations[hhkps._data_split][idx, :]
+        gt_str = []
+        for i, s in enumerate(img_anns):
+            act_ind = hh.interactions[i, 0]
+            obj_ind = hh.interactions[i, 1]
+            if s > 0:
+                gt_str.append(f'{hh.actions[act_ind]} {hh.objects[obj_ind]}')
+        print(f'\t\t{", ".join(gt_str)}')
+
+        # Visualise
         visualizer = Visualizer(img, kp_thr=args.kp_thr)
-        vis_output = visualizer.output
 
-        im_data = hhkps.pc_img_data[idx]
-        if im_data:
+        im_data = hhkps.img_data_cache[idx]
+
+        try:
             person_inds = im_data['person_inds']
-            person_boxes = hhkps.pc_person_boxes[person_inds]
-            person_kps = hhkps.pc_coco_kps[person_inds]
-            kp_boxes = hhkps.pc_hake_kp_boxes[person_inds].reshape(-1, 5)
+        except KeyError:
+            print(f'No people in image {idx}.')
+            continue
+
+        if args.max_ppl > 0:
+            person_scores = hhkps.person_scores[person_inds]
+            inds = np.argsort(person_scores)[::-1]
+            person_inds = person_inds[inds[:args.max_ppl]]
+
+        person_boxes = hhkps.person_boxes[person_inds]
+        person_kps = hhkps.coco_kps[person_inds]
+        kp_boxes = hhkps.hake_kp_boxes[person_inds]
+
+        if args.tin:
+            try:
+                obj_inds = im_data['obj_inds']
+                if args.max_obj > 0:
+                    obj_scores = np.max(hhkps.obj_scores[obj_inds, :], axis=1)
+                    inds = np.argsort(obj_scores)[::-1]
+                    obj_inds = obj_inds[inds[:args.max_obj]]
+                obj_boxes = hhkps.obj_boxes[obj_inds]
+
+                start = time.perf_counter()
+                patterns = get_next_sp_with_pose(human_boxes=person_boxes, human_poses=person_kps, object_boxes=obj_boxes,
+                                                 fill_boxes=False,
+                                                 part_boxes=kp_boxes[:, :, :4]
+                                                 )
+                all_t += (time.perf_counter() - start)
+                patterns = np.pad(patterns, [(0, 0), (0, 0), (1, 1), (1, 1), (0, 0)], mode='constant', constant_values=1)
+
+                print(f'{all_t * 1000 / (idx + 1):.3f}ms')
+
+                pose_grid = patterns[:, :, :, :, -1]
+                pose_grid = np.stack([pose_grid] * 3, axis=-1)  # greyscale -> RBG (still grey)
+                pose_grid[..., 2] = patterns[:, :, :, :, -2]  # blue channel = object
+                pose_grid[..., 1] = np.sum(patterns[:, :, :, :, :-3], axis=-1)  # green channel = parts
+                pose_grid = pose_grid.transpose([0, 2, 1, 3, 4])
+                pose_grid = pose_grid.reshape((patterns.shape[0] * patterns.shape[2], patterns.shape[1] * patterns.shape[3], 3))
+
+                scores = hhkps.person_scores[person_inds]
+                visualizer.overlay_instances(boxes=person_boxes, labels=[f'{s:.2f}'.lstrip('0') for s in scores], alpha=0.7)
+                visualizer.overlay_instances(boxes=obj_boxes, alpha=0.7)
+
+                plt.figure(figsize=(13, 6))
+                plt.subplot(1, 2, 1)
+                plt.imshow(visualizer.output.get_image())
+                plt.axis('off')
+                plt.subplot(1, 2, 2)
+                plt.imshow(pose_grid)
+                plt.axis('off')
+                plt.show()
+            except KeyError:
+                print(f'Image {idx} is empty.')
+            continue  # this is correct here (TIN => nothing else)
+
+        if args.pbb:
+            scores = hhkps.person_scores[person_inds]
+            visualizer.overlay_instances(boxes=person_boxes, labels=[f'{s:.2f}'.lstrip('0') for s in scores], alpha=0.7)
+
+        if args.obb:
+            try:
+                obj_inds = im_data['obj_inds']
+                obj_boxes = hhkps.obj_boxes[obj_inds]
+                obj_classes = np.argmax(hhkps.obj_scores[obj_inds], axis=1)
+                labels = [hhkps.full_dataset.objects[c] for c in obj_classes]
+                # labels = [f'{hhkps.full_dataset.objects[c]} {im_data["obj_scores"][i, c]:.1f}' for i, c in enumerate(obj_classes)]
+                visualizer.overlay_instances(labels=labels, boxes=obj_boxes, alpha=0.7)
+            except KeyError:
+                pass
+
+        # Draw part bounding boxes
+        if not args.no_bb:
+            kp_boxes = kp_boxes.reshape(-1, 5)
             assert kp_boxes.shape[0] == person_boxes.shape[0] * len(hh.keypoints)
+            labels = hh.keypoints * person_boxes.shape[0]
+            labels = [f'{l} {kp_boxes[i, -1]:.1f}' for i, l in enumerate(labels)]
+            visualizer.overlay_instances(labels=labels, boxes=kp_boxes[:, :4], alpha=0.7)
 
-            if args.pbb:
-                scores = hhkps.pc_person_scores[person_inds]
-                vis_output = visualizer.overlay_instances(boxes=person_boxes, labels=[f'{s:.2f}'.lstrip('0') for s in scores], alpha=0.7)
-
-            if args.obb:
-                try:
-                    obj_inds = im_data['obj_inds']
-                    obj_boxes = hhkps.pc_obj_boxes[obj_inds]
-                    obj_classes = np.argmax(hhkps.pc_obj_scores[obj_inds], axis=1)
-                    labels = [hhkps.full_dataset.objects[c] for c in obj_classes]
-                    # labels = [f'{hhkps.full_dataset.objects[c]} {im_data["obj_scores"][i, c]:.1f}' for i, c in enumerate(obj_classes)]
-                    vis_output = visualizer.overlay_instances(labels=labels, boxes=obj_boxes, alpha=0.7)
-                except KeyError:
-                    pass
-
-            # Draw part bounding boxes
-            if not args.no_bb:
-                labels = hh.keypoints * person_boxes.shape[0]
-                labels = [f'{l} {kp_boxes[i, -1]:.1f}' for i, l in enumerate(labels)]
-                vis_output = visualizer.overlay_instances(labels=labels, boxes=kp_boxes[:, :4], alpha=0.7)
-
-            # Draw keypoints
-            if not args.no_kp:
-                for kps in person_kps:
-                    vis_output = visualizer.draw_keypoints(kps, print_names=args.no_bb)
+        # Draw keypoints
+        if not args.no_kp:
+            for kps in person_kps:
+                visualizer.draw_keypoints(kps, print_names=args.no_bb)
 
         # Save output
-        vis_output.save(os.path.join(save_dir, fname))
+        if args.vis:
+            plt.imshow(visualizer.output.get_image())
+            plt.show()
+        else:
+            visualizer.output.save(os.path.join(save_dir, fname))
 
 
 if __name__ == '__main__':
-    vis_hico_hake_kps(get_args())
+    analysis_hub({'hhkps': vis_hico_hake_kps,
+                  })

@@ -18,6 +18,10 @@ class HoiDataset:
         self.oa_pair_to_interaction[self.interactions[:, 1], self.interactions[:, 0]] = np.arange(self.num_interactions)
 
     @property
+    def interactions_str(self):
+        return [f'{self.actions[a]} {self.objects[o]}' for a, o in self.interactions]
+
+    @property
     def num_objects(self):
         return len(self.objects)
 

@@ -41,7 +41,7 @@ class PartEvaluatorImg:
         predict_part_action_scores = np.full_like(self.gt_scores, fill_value=np.nan, dtype=np.float32)
         for i, res in enumerate(predictions):
             prediction = Prediction(res)
-            predict_part_action_scores[i, :] = prediction.part_action_scores
+            predict_part_action_scores[i, :] = prediction.part_state_scores
         Timer.get('Eval epoch', 'Predictions').toc()
 
         Timer.get('Eval epoch', 'Metrics').tic()
@@ -54,27 +54,24 @@ class PartEvaluatorImg:
 
         Timer.get('Eval epoch').toc()
 
-    def output_metrics(self, sort=False, interactions_to_keep=None):
-        if interactions_to_keep is not None:
-            raise NotImplementedError
-
+    def output_metrics(self, sort=False, interactions_to_keep=None, compute_pos=True):
         mf = MetricFormatter()
-
         metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep)
 
         # Same, but with null interaction filtered
-        no_null_actions = [i for i, p in enumerate(self.full_dataset.part_actions_pairs) if p[1] != self.full_dataset.null_action]
-        pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=no_null_actions, prefix='p')
+        if compute_pos:
+            no_null_actions = [i for i, p in enumerate(self.full_dataset.bp_ps_pairs) if p[1] != self.full_dataset.null_action]
+            pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=no_null_actions, prefix='p')
 
-        for k, v in pos_metrics.items():
-            assert k not in metrics.keys()
-            metrics[k] = v
+            for k, v in pos_metrics.items():
+                assert k not in metrics.keys()
+                metrics[k] = v
         return metrics
 
     def _output_metrics(self, mformatter, sort, interactions_to_keep, prefix=''):
         gt_hoi_class_hist, hoi_metrics, hoi_class_inds = sort_and_filter(metrics=self.metrics,
                                                                          gt_labels=self.gt_part_action_labels,
-                                                                         all_classes=list(range(len(self.full_dataset.part_actions_pairs))),
+                                                                         all_classes=list(range(len(self.full_dataset.bp_ps_pairs))),
                                                                          sort=sort,
                                                                          keep_inds=interactions_to_keep,
                                                                          metric_prefix=prefix)

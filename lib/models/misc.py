@@ -40,6 +40,8 @@ def bce_loss(logits, labels, pos_weights=None, reduce=True):
         else:
             loss = loss_mat
     else:  # standard BCE loss
+        if pos_weights is None and cfg.cspc > 0:
+            pos_weights = cfg.cspc
         loss = functional.binary_cross_entropy_with_logits(logits, labels, pos_weight=pos_weights, reduction='elementwise_mean' if reduce else 'none')
     if reduce and not cfg.meanc:
         loss *= logits.shape[1]
@@ -56,3 +58,23 @@ def LIS(x, w=None, k=None, T=None):  # defaults are as in the paper
             T = 1 + np.exp(k - w).item()
     assert w is not None and k is not None and T is not None
     return T * torch.sigmoid(w * x - k)
+
+
+# The following is taken from https://github.com/lukemelas/EfficientNet-PyTorch
+class SwishImplementation(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, i):
+        result = i * torch.sigmoid(i)
+        ctx.save_for_backward(i)
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        i = ctx.saved_variables[0]
+        sigmoid_i = torch.sigmoid(i)
+        return grad_output * (sigmoid_i * (1 + i * (1 - sigmoid_i)))
+
+
+class MemoryEfficientSwish(torch.nn.Module):
+    def forward(self, x):
+        return SwishImplementation.apply(x)

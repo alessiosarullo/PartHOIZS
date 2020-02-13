@@ -103,7 +103,7 @@ class RunningStats:
             if 'total' not in loss_name.lower():
                 stats[loss_name] = loss_value
             if verbose:
-                print('%-20s %f' % (loss_name, loss_value))
+                print('%-30s %f' % (loss_name, loss_value))
 
         if verbose:
             if cfg.verbose:
@@ -129,21 +129,18 @@ class RunningStats:
         Timer.get(self.epoch_str, 'Batch').tic()
 
     def batch_toc(self):
-        Timer.get(self.epoch_str, 'Batch').toc()
+        Timer.get(self.epoch_str, 'Batch').toc(discard=5)
 
     def print_times(self, epoch=None, batch=None, curr_iter=None):
         num_batches = self.num_batches
-        time_per_call = Timer.get(self.epoch_str, 'Batch', get_only=True).spent(average=True)
-        time_to_load = Timer.get('GetBatch', get_only=True).spent(average=True)
+        opt_time = Timer.get(self.epoch_str, 'Batch', get_only=True).spent(average=True)
+        load_time = Timer.get('GetBatch', get_only=True).spent(average=True)
         try:
-            time_for_stats = Timer.get(self.epoch_str, 'Stats', get_only=True).spent(average=True)
+            stats_time = Timer.get(self.epoch_str, 'Stats', get_only=True).spent(average=True) / cfg.log_interval
         except (ValueError, ZeroDivisionError):
-            time_for_stats = 0
+            stats_time = 0
 
-        batch_size = self.batch_size
-        time_to_load_per_batch = time_to_load * batch_size
-        time_for_stats_per_batch = time_for_stats / cfg.log_interval
-        avg_time_per_batch = time_per_call + time_to_load_per_batch + time_for_stats_per_batch
+        avg_time_per_batch = opt_time + load_time + stats_time
         est_time_per_epoch = avg_time_per_batch * num_batches
 
         batch_str = 'ex {:5d}/{:5d}'.format(batch, num_batches - 1) if batch is not None else ''
@@ -157,13 +154,12 @@ class RunningStats:
             else:
                 header = '{:s}. {:s}.'.format(self.split_str, batch_str.capitalize())
 
-        print(header, 'Avg: {:>5s}/ex @ {:>5s}=opt, {:>5s}=load ({:>5s}/load), {:>5s}=stats ({:>5s}/stats).'.format(
-            Timer.format(avg_time_per_batch),
-            Timer.format(time_per_call),
-            Timer.format(time_to_load_per_batch), Timer.format(time_to_load),
-            Timer.format(time_for_stats_per_batch), Timer.format(time_for_stats),
-        ),
-              'Current {:s}progress: {:>7s}/{:>7s} (estimated).'.format('epoch ' if epoch is not None else '',
+        print(header, 'Avg: {:>5s}/ex @ {:>5s}=opt, {:>5s}=load, {:>5s}=stats.'.format(Timer.format(avg_time_per_batch),
+                                                                                       Timer.format(opt_time),
+                                                                                       Timer.format(load_time),
+                                                                                       Timer.format(stats_time),
+                                                                                       ))
+        print('Current {:s}progress: {:>7s}/{:>7s} (estimated).'.format('epoch ' if epoch is not None else '',
                                                                         Timer.format(Timer.get(self.epoch_str, get_only=True).progress()),
                                                                         Timer.format(est_time_per_epoch)))
         # Timer.get(self.epoch_str, 'Batch').print()

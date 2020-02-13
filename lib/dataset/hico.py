@@ -17,12 +17,13 @@ class HicoSplit(HoiDatasetSplit):
         super(HicoSplit, self).__init__(split, full_dataset, object_inds, action_inds)
         self.full_dataset = self.full_dataset  # type: Hico
         self.img_dims = self.full_dataset.split_img_dims[self._data_split]
+        self.fnames = self.full_dataset.split_filenames[self._data_split]
 
     def _get_precomputed_feats_fn(self, split):
         return cfg.precomputed_feats_format % ('hico', 'resnet152', split.value)
 
     @classmethod
-    def get_full_dataset(cls) -> HoiDataset:
+    def instantiate_full_dataset(cls) -> HoiDataset:
         return Hico()
 
 
@@ -55,6 +56,9 @@ class Hico(HoiDataset):
 
     def get_img_dir(self, split):
         return self.split_img_dir[split]
+
+    def get_fname_id(self, fname):
+        return int(os.path.splitext(fname)[0].split('_')[-1])
 
 
 class HicoDriver:

@@ -14,6 +14,7 @@ class Configs:
         # Program
         self.sync = False
         self.debug = False
+        self.debug_port = 16008
         self.monitor = False
         self.nworkers = 0
 
@@ -35,6 +36,12 @@ class Configs:
 
         # Null/background
         self.no_filter_bg_only = False
+        self.keep_unlabelled = False
+
+        # Image
+        self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
+        self.max_ppl = 3
+        self.max_obj = 3
 
         # Dataset
         self.val_ratio = 0.1
@@ -44,75 +51,82 @@ class Configs:
         ##########################################
         self.model = None
 
-        # Detector. The output dim is usually hardcoded in their files (e.g., `ResNet_roi_conv5_head_for_masks()`), so I can't read it from configs.
-        # self.rcnn_arch = 'e2e_faster_rcnn_R_50_FPN_1x'
-        self.rcnn_arch = 'e2e_mask_rcnn_R-50-C4_2x'
-
         # Architecture
         self.dropout = 0.5
         self.repr_dim = 1024
+        self.swish = False
 
         # General
         self.train_null_act = False
+        self.no_obj = False  # no object branch
 
         # Loss
         self.fl_gamma = 0.0  # gamma in focal loss
         self.meanc = False  # mean or sum over classes for BCE loss?
-        self.csp = False  # Use cost-sensitive coefficients for positive examples
-        self.cspbgc = 0.0  # Cost-sensitive coefficient for positive background (null) examples of part actions
-        self.cspc = 0.0  # Cost-sensitive coefficient for positive examples of part actions
-        # Soft labels, loss, regularisation, cost-sensitive loss
-        self.osl = 0.0
-        self.olc = 1.0
-        self.opr = 0.0
+        self.cspc = 0.0  # Use cost-sensitive coefficients for positive examples
+        self.cspbgc_p = 0.0  # Cost-sensitive coefficient for positive background (null) examples of part actions
+        self.cspc_p = 0.0  # Cost-sensitive coefficient for positive examples of part actions
+        self.ptos = False  # Use pre-trained object scores
+        # Cost-sensitive loss, [soft labels, regularisation]
         self.ocs = False
         #
-        self.asl = 0.0
-        self.alc = 1.0
-        self.apr = 0.0
         self.acs = False
+        self.awsu = 0.0
+        self.awsu_fp = 0.0
+        self.agcnr = 0.0
         # Regularisation
         self.grm = 0.3  # margin in graph regularisation
         self.grg = 0  # gamma in graph regularisation
         self.grseen = False
 
+        # Interactiveness
+        self.tin = False
+        self.ipsize = 32  # size of the interactiveness pattern feature map
+        self.tin_dropout = 0.8
+        self.cache_tin = False
+        self.tin_mean = False
+
         # ZS specific
-        self.no_wemb = False
-        self.wemb_a = False
+        self.merge_dir = False
+        self.trihead = False
 
         # ZS GCN specific
-        self.no_gc = False
-        self.link_null = False
+        self.gcswish = False
+        self.apgcn_link_null = False
         self.gcldim = 1024
         self.gcrdim = 1024
-        self.gcwemb = False
         self.gcdropout = 0.5
 
         # Part
+        self.pbf = ''  # part branch save file (load pre-trained part branch from here)
         self.no_part = False
         self.part_only = False
+        self.part_bg_diff = False
         self.no_kp = False
         self.sbmar = 0.0  # small boxes min area ratio
-        self.max_ppl = 3
-        self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
         self.use_sk = False  # skeleton
-        self.spcfmdim = 0  # spatial configuration feature map dim used to compute attention over people
+        self.ptres = False
+        self.pint = False
+        self.part_repr_dim = 256
 
         ##########################################
         # Optimiser options                      #
         ##########################################
 
         # Optimiser
-        self.adam = False
+        self.sgd = False
+        self.radam = False
         self.adamb1 = 0.9
         self.adamb2 = 0.999
         self.momentum = 0.9
         self.l2_coeff = 5e-4
         self.grad_clip = 5.0
-        self.num_epochs = 50
+        self.num_epochs = 80
 
         # Learning rate. A value of 0 means that option is disabled.
-        self.lr = 1e-3
+        self.lr = 0.0
+        self._def_lr_sgd = 1e-3
+        self._def_lr_adam = 5e-5
         self.lr_gamma = 0.1
         self.lr_decay_period = 0
         self.lr_warmup = 0
@@ -162,27 +176,23 @@ class Configs:
         return os.path.join(self.output_path, 'watched.tar')
 
     @property
-    def saved_model_file(self):
-        return os.path.join(self.output_path, 'final.tar')
+    def best_model_file(self):
+        return os.path.join(self.output_path, 'best.tar')
 
     @property
     def prediction_file(self):
         return os.path.join(self.output_path, 'prediction_test.pkl')
 
     @property
-    def part_eval_res_file(self):
-        return os.path.join(self.output_path, 'part_eval_test.pkl')
-
-    @property
-    def eval_res_file(self):
-        return os.path.join(self.output_path, 'eval_test.pkl')
+    def eval_res_file_format(self):
+        return os.path.join(self.output_path, '%s_eval_test.pkl')
 
     @property
     def ds_inds_file(self):
         return os.path.join(self.output_path, 'ds_inds.pkl')
 
     @property
-    def active_classes_file(self):
+    def seen_classes_file(self):
         assert self.seenf >= 0
         return os.path.join('zero-shot_inds', f'seen_inds_{self.seenf}.pkl.push')
 
@@ -196,7 +206,7 @@ class Configs:
 
     @property
     def eval_only(self):
-        return os.path.exists(self.saved_model_file) and not self.resume
+        return os.path.exists(self.best_model_file) and not self.resume
 
     def parse_args(self, fail_if_missing=True, reset=False):
         args = sys.argv
@@ -246,6 +256,9 @@ class Configs:
                 assert old_save_dir == self.output_path
         if fail_if_missing and self.model is None:
             raise ValueError('A model is required.')
+
+        if self.lr == 0:
+            self.lr = self._def_lr_sgd if self.sgd else self._def_lr_adam
 
     def save(self, file_path=None):
         file_path = file_path or self.config_file

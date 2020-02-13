@@ -4,7 +4,6 @@ import h5py
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
 from torch.utils.data import Dataset, Subset
 from torchvision import transforms
 
@@ -50,16 +49,16 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
         object_inds = sorted(object_inds) if object_inds is not None else range(self.full_dataset.num_objects)
         self.objects = [full_dataset.objects[i] for i in object_inds]
-        self.active_objects = np.array(object_inds, dtype=np.int)
+        self.seen_objects = np.array(object_inds, dtype=np.int)
 
         action_inds = sorted(action_inds) if action_inds is not None else range(self.full_dataset.num_actions)
         self.actions = [full_dataset.actions[i] for i in action_inds]
-        self.active_actions = np.array(action_inds, dtype=np.int)
+        self.seen_actions = np.array(action_inds, dtype=np.int)
 
-        active_op_mat = self.full_dataset.oa_pair_to_interaction[self.active_objects, :][:, self.active_actions]
-        active_interactions = set(np.unique(active_op_mat).tolist()) - {-1}
-        self.active_interactions = np.array(sorted(active_interactions), dtype=np.int)
-        self.interactions = self.full_dataset.interactions[self.active_interactions, :]  # original action and object inds
+        seen_op_mat = self.full_dataset.oa_pair_to_interaction[self.seen_objects, :][:, self.seen_actions]
+        seen_interactions = set(np.unique(seen_op_mat).tolist()) - {-1}
+        self.seen_interactions = np.array(sorted(seen_interactions), dtype=np.int)
+        self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
 
         self.img_transform = transforms.Compose([
             transforms.Resize(256),
@@ -75,10 +74,10 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
             self.pc_img_feats = None
 
         self.labels = self.full_dataset.split_annotations[self._data_split]
-        if self.active_interactions.size < self.full_dataset.num_interactions:
+        if self.seen_interactions.size < self.full_dataset.num_interactions:
             all_labels = self.labels
             self.labels = np.zeros_like(all_labels)
-            self.labels[:, self.active_interactions] = all_labels[:, self.active_interactions]
+            self.labels[:, self.seen_interactions] = all_labels[:, self.seen_interactions]
 
         self.non_empty_split_imgs = np.flatnonzero(np.any(self.labels, axis=1))
 
@@ -117,12 +116,14 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         Timer.get('GetBatch').toc()
         return feats, labels, []
 
-    def get_loader(self, batch_size, num_workers=0, num_gpus=1, shuffle=None, drop_last=True, **kwargs):
+    def get_loader(self, batch_size, num_workers=0, num_gpus=1, shuffle=None, drop_last=None, **kwargs):
         if self.pc_img_feats is None:
             raise NotImplementedError('This is only possible with precomputed features.')
 
         if shuffle is None:
             shuffle = True if self.split == Splits.TRAIN else False
+        if drop_last is None:
+            drop_last = False if self.split == Splits.TEST else True
         batch_size = batch_size * num_gpus
 
         if self.split == Splits.TEST:
@@ -166,13 +167,13 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         raise NotImplementedError
 
     @classmethod
-    def get_full_dataset(cls) -> HoiDataset:
+    def instantiate_full_dataset(cls) -> HoiDataset:
         raise NotImplementedError
 
     @classmethod
     def get_splits(cls, act_inds=None, obj_inds=None):
         splits = {}
-        full_dataset = cls.get_full_dataset()
+        full_dataset = cls.instantiate_full_dataset()
 
         # Split train/val if needed
         train_split = cls(split=Splits.TRAIN, full_dataset=full_dataset, object_inds=obj_inds, action_inds=act_inds)
@@ -197,10 +198,10 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
         train_str = Splits.TRAIN.value.capitalize()
         if obj_inds is not None:
-            print(f'{train_str} objects ({train_split.active_objects.size}):', train_split.active_objects.tolist())
+            print(f'{train_str} objects ({train_split.seen_objects.size}):', train_split.seen_objects.tolist())
         if act_inds is not None:
-            print(f'{train_str} actions ({train_split.active_actions.size}):', train_split.active_actions.tolist())
+            print(f'{train_str} actions ({train_split.seen_actions.size}):', train_split.seen_actions.tolist())
         if obj_inds is not None or act_inds is not None:
-            print(f'{train_str} interactions ({train_split.active_interactions.size}):', train_split.active_interactions.tolist())
+            print(f'{train_str} interactions ({train_split.seen_interactions.size}):', train_split.seen_interactions.tolist())
 
         return splits

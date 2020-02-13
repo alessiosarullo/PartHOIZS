@@ -43,11 +43,12 @@ class Timer:
         assert self.start_time is None
         self.start_time = time.perf_counter()
 
-    def toc(self, synchronize=False):
+    def toc(self, synchronize=False, discard=0):
         if synchronize and self.__class__.gpu_sync:
             torch.cuda.synchronize()
         self.last = time.perf_counter() - self.start_time
-        self.total_time += self.last
+        if discard <= self.num_instances:
+            self.total_time += self.last
         self.start_time = None
         self.num_instances += 1
 

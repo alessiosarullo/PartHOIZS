@@ -190,7 +190,7 @@ class Visualizer:
         self.kp_thr = kp_thr
 
         self.img = np.asarray(img_rgb).clip(0, 255).astype(np.uint8)
-        self.output = VisImage(self.img, scale=scale)
+        self.output = VisImage(self.img, scale=scale)  # type: VisImage
         self.cpu_device = torch.device("cpu")
 
         # too small texts are useless, therefore clamp to 9
@@ -205,7 +205,7 @@ class Visualizer:
             labels=None,
             assigned_colors=None,
             alpha=0.5
-    ):
+    ) -> VisImage:
         """
         Args:
             boxes (ndarray): an Nx4 numpy array of XYXY_ABS format for the N objects in a single image,

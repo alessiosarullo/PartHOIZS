@@ -1,27 +1,16 @@
 import json
 import os
 from collections import namedtuple
-from typing import Dict, List, NamedTuple
+from typing import Dict, List
 
 import h5py
 import numpy as np
 import torch
-import pickle
 
 from config import cfg
 from lib.dataset.hico import Hico, HicoSplit
 from lib.dataset.utils import Splits, get_hico_to_coco_mapping, COCO_CLASSES, filter_on_score
 from lib.utils import Timer
-from lib.dataset.tin_utils import get_next_sp_with_pose
-
-
-class Minibatch(NamedTuple):
-    img_attrs: List
-    person_attrs: List
-    obj_attrs: List
-    img_labels: torch.Tensor
-    part_labels: torch.Tensor
-    other: List
 
 
 class PrecomputedFilesHandler:
@@ -123,7 +112,7 @@ class HicoHakeSplit(HicoSplit):
         self.part_labels = self.full_dataset.split_part_annotations[self._data_split]
 
     @classmethod
-    def instantiate_full_dataset(cls) -> HicoHake:
+    def get_full_dataset(cls) -> HicoHake:
         return HicoHake()
 
     @property
@@ -150,7 +139,6 @@ class HicoHakeSplit(HicoSplit):
 class HicoHakeKPSplit(HicoHakeSplit):
     def __init__(self, no_feats=False, *args, **kwargs):
         super(HicoHakeKPSplit, self).__init__(*args, **kwargs)
-        self.cache_tin = (cfg.ipsize <= 32) and cfg.cache_tin
         hico_to_coco_mapping = get_hico_to_coco_mapping(self.full_dataset.objects)
         try:
             self.objects_fn = cfg.precomputed_feats_format % ('hicoobjs', 'mask_rcnn_X_101_32x8d_FPN_3x',
@@ -160,8 +148,7 @@ class HicoHakeKPSplit(HicoHakeSplit):
             if not no_feats:
                 self.obj_feats = PrecomputedFilesHandler.get(self.objects_fn, 'box_feats')
                 self.obj_feats_dim = self.obj_feats.shape[-1]
-                assert self.obj_feats.dtype == np.float32
-            assert self.obj_boxes.dtype == self.obj_scores.dtype == np.float32
+            assert self.obj_boxes.dtype == self.obj_scores.dtype == self.obj_feats.dtype == np.float32
 
             self.keypoints_fn = cfg.precomputed_feats_format % \
                                 ('hicokps', 'keypoint_rcnn_R_101_FPN_3x', f'{self._data_split.value}{"__nofeats" if no_feats else ""}')
@@ -172,24 +159,15 @@ class HicoHakeKPSplit(HicoHakeSplit):
             assert self.hake_kp_boxes.shape[1] == self.full_dataset.num_keypoints
             if not no_feats:
                 self.hake_kp_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats')
-                self.person_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'person_feats')
-                self.kp_net_dim = self.hake_kp_feats.shape[-1]
-                assert self.kp_net_dim == self.person_feats.shape[-1]
-                assert self.hake_kp_feats.dtype == np.float32
+                self.kp_feats_dim = self.hake_kp_feats.shape[-1]
             assert np.all(np.min(self.coco_kps[:, :, :2], axis=1) >= self.person_boxes[:, :2])
             assert np.all(np.max(self.coco_kps[:, :, :2], axis=1) <= self.person_boxes[:, 2:4])
             assert self.person_boxes.dtype == self.coco_kps.dtype == self.person_scores.dtype == self.hake_kp_boxes.dtype == np.float32
 
             # Cache
-            self.img_data_cache, imgs_with_kps = self._compute_img_data()  # type: List[Dict], List
-            assert len(self.img_data_cache) == len(self.fnames)
-            if cfg.tin and self.cache_tin:
-                interactiveness_fname_ids, self.interactiveness_patterns = self._get_interactiveness_patterns()
-                inv_ind = {fname_id: i for i, fname_id in enumerate(interactiveness_fname_ids)}
-                self.interactiveness_idx_from_img_idx = [inv_ind.get(self.full_dataset.get_fname_id(self.fnames[idx]), None)
-                                                         for idx in range(self.num_images)]
+            self.prs_and_obj_inds_per_img, imgs_with_kps = self._compute_img_data()  # type: List[Dict]
+            assert len(self.prs_and_obj_inds_per_img) == len(self.full_dataset.split_filenames[self._data_split])
 
-            # FIXME? Keep images without detected keypoints (i.e., people)
             if cfg.keep_unlabelled:
                 self.non_empty_split_imgs = np.array(imgs_with_kps)
             else:
@@ -212,11 +190,11 @@ class HicoHakeKPSplit(HicoHakeSplit):
             fname_id_to_kp_inds.setdefault(fid, []).append(i)
         fname_id_to_kp_inds = {k: np.array(sorted(v)) for k, v in fname_id_to_kp_inds.items()}
 
-        all_img_data = []
+        img_inds = []
         imgs_with_kps = []
-        for i, fname in enumerate(self.fnames):
-            fname_id = self.full_dataset.get_fname_id(fname)
-            im_data = {'fname_id': fname_id}
+        for i, fname in enumerate(self.full_dataset.split_filenames[self._data_split]):
+            fname_id = int(os.path.splitext(fname)[0].split('_')[-1])
+            im_data = {}
 
             # People
             im_person_inds = fname_id_to_kp_inds.get(fname_id, None)
@@ -243,110 +221,47 @@ class HicoHakeKPSplit(HicoHakeSplit):
                 assert inds.size > 0
                 im_data['obj_inds'] = np.sort(im_obj_inds[inds])
 
-            all_img_data.append(im_data)
-        return all_img_data, imgs_with_kps
-
-    def _get_interactiveness_patterns(self):
-        D, P, M = cfg.ipsize, cfg.max_ppl, cfg.max_obj
-        fname_cache_fname = os.path.join(cfg.cache_root, f'interactiveness_fnames_dim{D}_ppl{P}_obj{M}__{self._data_split.value}.pkl')
-        data_cache_fname = os.path.join(cfg.cache_root, f'interactiveness_dim{D}_ppl{P}_obj{M}__{self._data_split.value}.h5')
-        if not os.path.exists(fname_cache_fname):
-            print('Caching interactiveness patterns.')
-            img_data = [imd for imd in self.img_data_cache if 'person_inds' in imd.keys() and 'obj_inds' in imd.keys()]
-            interactiveness_patterns = np.full((len(img_data), P, M, D, D, 3 + self.full_dataset.num_keypoints), fill_value=np.nan, dtype=np.float32)
-            for i, imd in enumerate(img_data):
-                person_inds = imd['person_inds']
-                obj_inds = imd['obj_inds']
-                patterns = get_next_sp_with_pose(human_boxes=self.person_boxes[person_inds],
-                                                 human_poses=self.coco_kps[person_inds],
-                                                 object_boxes=self.obj_boxes[obj_inds],
-                                                 size=D,
-                                                 part_boxes=self.hake_kp_boxes[person_inds, :, :4]
-                                                 )
-                interactiveness_patterns[i, :person_inds.size, :obj_inds.size] = patterns
-
-            ip_file = h5py.File(data_cache_fname, 'w')
-            ip_file.create_dataset('interactiveness_patterns', data=interactiveness_patterns)
-            ip_file.close()
-            del interactiveness_patterns
-
-            interactiveness_fname_ids = np.array([imd['fname_id'] for imd in img_data])
-            with open(fname_cache_fname, 'wb') as f:
-                pickle.dump(interactiveness_fname_ids, f)
-
-        print('Loading interactiveness patterns.')
-        with open(fname_cache_fname, 'rb') as f:
-            interactiveness_fname_ids = pickle.load(f)
-        interactiveness_patterns = PrecomputedFilesHandler.get(data_cache_fname, 'interactiveness_patterns', load_in_memory=False)
-
-        return interactiveness_fname_ids, interactiveness_patterns
+            img_inds.append(im_data)
+        return img_inds, imgs_with_kps
 
     def _collate(self, idx_list, device):
-
-        # This assumes the filtering has been done on initialisation (i.e., there are no more people/objects than the max number)
         Timer.get('GetBatch').tic()
+
         idxs = np.array(idx_list)
 
-        # Image data
+        person_inds, obj_inds = [], []
+        for i, idx in enumerate(idxs):
+            im_data = self.prs_and_obj_inds_per_img[idx]
+            try:
+                i_person_inds = im_data['person_inds']
+                person_inds.append(i_person_inds)
+            except KeyError:
+                person_inds.append(np.arange(0))
+            try:
+                i_obj_inds = im_data['obj_inds']
+                obj_inds.append(i_obj_inds)
+            except KeyError:
+                obj_inds.append(np.arange(0))
+        c_num_per_img = np.cumsum([pi.shape[0] for pi in person_inds])
+        person_im_inds = [np.arange((c_num_per_img[i - 1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
+
+        c_num_per_img = np.cumsum([pi.shape[0] for pi in obj_inds])
+        obj_im_inds = [np.arange((c_num_per_img[i - 1] if i > 0 else 0), c) for i, c in enumerate(c_num_per_img)]
+
         im_ids = [f'{self.split.value}_{idx}' for idx in idxs]
         feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
         orig_img_wh = torch.tensor(self.img_dims[idxs, :], dtype=torch.float32, device=device)
 
-        N, P, M = idxs.size, cfg.max_ppl, cfg.max_obj  # #imgs, #people, #objects
-        K_coco, K_hake = self.coco_kps.shape[1], self.full_dataset.num_keypoints  # #keypoints
-        B, O = self.full_dataset.num_parts, self.full_dataset.num_objects  # #body parts, #object classes
-        F_kp, F_obj = self.kp_net_dim, self.obj_feats_dim  # feature vector dimensionality
-        ppl_boxes = np.zeros((N, P, 4), dtype=np.float32)
-        ppl_feats = np.zeros((N, P, F_kp), dtype=np.float32)
-        coco_kps = np.zeros((N, P, K_coco, 3), dtype=np.float32)
-        kp_boxes = np.zeros((N, P, K_hake, 5), dtype=np.float32)
-        kp_feats = np.zeros((N, P, K_hake, F_kp), dtype=np.float32)
-        obj_boxes = np.zeros((N, M, 4), dtype=np.float32)
-        obj_scores = np.zeros((N, M, O), dtype=np.float32)
-        obj_feats = np.zeros((N, M, F_obj), dtype=np.float32)
+        person_inds = np.concatenate(person_inds)
+        person_boxes = torch.tensor(self.person_boxes[person_inds], dtype=torch.float32, device=device)
+        person_kps = torch.tensor(self.coco_kps[person_inds], dtype=torch.float32, device=device)
+        kp_boxes = torch.tensor(self.hake_kp_boxes[person_inds], dtype=torch.float32, device=device)
+        kp_feats = torch.tensor(self.hake_kp_feats[person_inds], dtype=torch.float32, device=device)
 
-        person_inds = np.full((N, P), fill_value=np.nan)
-        obj_inds = np.full((N, M), fill_value=np.nan)
-        for i, idx in enumerate(idxs):
-            im_data = self.img_data_cache[idx]
-            try:
-                i_person_inds = im_data['person_inds']
-                P_i = i_person_inds.size
-                assert P_i <= P
-                person_inds[i, :P_i] = i_person_inds
-            except KeyError:
-                pass
-
-            try:
-                i_obj_inds = im_data['obj_inds']
-                M_i = i_obj_inds.size
-                assert M_i <= M
-                obj_inds[i, :M_i] = i_obj_inds
-            except KeyError:
-                pass
-
-        valid_person_inds_mask = ~np.isnan(person_inds)
-        valid_person_inds = person_inds[valid_person_inds_mask].astype(np.int)
-        ppl_boxes[valid_person_inds_mask] = self.person_boxes[valid_person_inds]
-        ppl_feats[valid_person_inds_mask] = self.person_feats[valid_person_inds]
-        coco_kps[valid_person_inds_mask] = self.coco_kps[valid_person_inds]
-        kp_boxes[valid_person_inds_mask] = self.hake_kp_boxes[valid_person_inds]
-        kp_feats[valid_person_inds_mask] = self.hake_kp_feats[valid_person_inds]
-
-        valid_obj_inds_mask = ~np.isnan(obj_inds)
-        valid_obj_inds = obj_inds[valid_obj_inds_mask].astype(np.int)
-        obj_boxes[valid_obj_inds_mask] = self.obj_boxes[valid_obj_inds]
-        obj_scores[valid_obj_inds_mask] = self.obj_scores[valid_obj_inds]
-        obj_feats[valid_obj_inds_mask] = self.obj_feats[valid_obj_inds]
-
-        t_ppl_boxes = torch.from_numpy(ppl_boxes).to(device=device)
-        t_ppl_feats = torch.from_numpy(ppl_feats).to(device=device)
-        t_coco_kps = torch.from_numpy(coco_kps).to(device=device)
-        t_kp_boxes = torch.from_numpy(kp_boxes).to(device=device)
-        t_kp_feats = torch.from_numpy(kp_feats).to(device=device)
-        t_obj_boxes = torch.from_numpy(obj_boxes).to(device=device)
-        t_obj_scores = torch.from_numpy(obj_scores).to(device=device)
-        t_obj_feats = torch.from_numpy(obj_feats).to(device=device)
+        obj_inds = np.concatenate(obj_inds)
+        obj_boxes = torch.tensor(self.obj_boxes[obj_inds], dtype=torch.float32, device=device)
+        obj_scores = torch.tensor(self.obj_scores[obj_inds], dtype=torch.float32, device=device)
+        obj_feats = torch.tensor(self.obj_feats[obj_inds], dtype=torch.float32, device=device)
 
         if self.split != Splits.TEST:
             labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
@@ -354,42 +269,13 @@ class HicoHakeKPSplit(HicoHakeSplit):
         else:
             labels = part_labels = None
 
-        mb = Minibatch(img_attrs=[im_ids, feats, orig_img_wh],
-                       person_attrs=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
-                       obj_attrs=[t_obj_boxes, t_obj_scores, t_obj_feats],
-                       img_labels=labels, part_labels=part_labels,
-                       other=[])
-        if cfg.tin:
-            if self.cache_tin:
-                ip_inds = [self.interactiveness_idx_from_img_idx[idx] for idx in idx_list]
-                ip_inds = np.array([idx if idx is not None else np.nan for idx in ip_inds])
-                valid_ip_inds_mask = ~np.isnan(ip_inds)
-                valid_ip_inds = ip_inds[valid_ip_inds_mask].astype(np.int)
-                sort_inds = np.argsort(valid_ip_inds)
-                sorted_valid_ip_inds = valid_ip_inds[sort_inds]
-                unsort_inds = np.argsort(sort_inds)
-                assert np.all(valid_ip_inds == sorted_valid_ip_inds[unsort_inds])
-                interactiveness_patterns = np.full((N, *self.interactiveness_patterns.shape[1:]), fill_value=np.nan, dtype=np.float32)
-                interactiveness_patterns[valid_ip_inds_mask] = self.interactiveness_patterns[sorted_valid_ip_inds][unsort_inds]
-                interactiveness_patterns[np.isnan(interactiveness_patterns)] = 0
-            else:
-                D = cfg.ipsize
-                interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + K_hake), dtype=np.float32)
-                for i in range(N):
-                    valid_person_inds_mask_i = valid_person_inds_mask[i]
-                    valid_obj_inds_mask_i = valid_obj_inds_mask[i]
-                    pattern = get_next_sp_with_pose(human_boxes=ppl_boxes[i, valid_person_inds_mask_i],
-                                                    human_poses=coco_kps[i, valid_person_inds_mask_i],
-                                                    object_boxes=obj_boxes[i, valid_obj_inds_mask_i],
-                                                    size=D,
-                                                    part_boxes=kp_boxes[i, valid_person_inds_mask_i, :, :4]
-                                                    )
-                    r, c = np.where(valid_person_inds_mask_i[:, None] & valid_obj_inds_mask_i[None, :])
-                    interactiveness_patterns[i, r, c] = pattern.reshape((-1, *pattern.shape[2:]))
-            t_interactiveness_patterns = torch.from_numpy(interactiveness_patterns).to(device=device)
-            mb.person_attrs.append(t_interactiveness_patterns)
         Timer.get('GetBatch').toc(discard=5)
-        return mb
+        mb = namedtuple('Minibatch', ['img_attrs', 'person_attrs', 'obj_attrs', 'img_labels', 'part_labels', 'other'])
+        return mb(img_attrs=[im_ids, feats, orig_img_wh],
+                  person_attrs=[person_im_inds, person_boxes, person_kps, kp_boxes, kp_feats],
+                  obj_attrs=[obj_im_inds, obj_boxes, obj_scores, obj_feats],
+                  img_labels=labels, part_labels=part_labels,
+                  other=[])
 
 
 if __name__ == '__main__':

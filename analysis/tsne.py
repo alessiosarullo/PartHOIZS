@@ -19,7 +19,7 @@ def save():
     cfg.load()
 
     if cfg.seenf >= 0:
-        inds_dict = pickle.load(open(cfg.active_classes_file, 'rb'))
+        inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
         act_inds = sorted(inds_dict[Splits.TRAIN.value]['act'].tolist())
         obj_inds = sorted(inds_dict[Splits.TRAIN.value]['obj'].tolist())
     else:
@@ -31,7 +31,7 @@ def save():
     # Model
     model = get_all_models_by_name()[cfg.model](train_split)  # type: AbstractModel
 
-    ckpt = torch.load(cfg.saved_model_file, map_location='cpu')
+    ckpt = torch.load(cfg.best_model_file, map_location='cpu')
     model.load_state_dict(ckpt['state_dict'])
 
     model.eval()
@@ -62,7 +62,7 @@ def show():
         print(f'{a:20s}', end=' ')
     print()
 
-    inds_dict = pickle.load(open(cfg.active_classes_file, 'rb'))
+    inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
     seen_act_inds = np.array(sorted(inds_dict[Splits.TRAIN.value]['act'].tolist()))
     unseen_act_inds = np.setdiff1d(np.arange(dataset.num_actions), seen_act_inds)
 

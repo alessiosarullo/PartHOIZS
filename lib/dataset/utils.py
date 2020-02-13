@@ -66,9 +66,7 @@ def interactions_to_mat(hois, hico, np2np=False):
         return torch.from_numpy(inter_mat).to(hois)
 
 
-def get_hoi_adjacency_matrix(dataset, isolate_null=None):
-    if isolate_null is None:
-        isolate_null = not cfg.link_null
+def get_hoi_adjacency_matrix(dataset, isolate_null=True):
     interactions = dataset.full_dataset.interactions
     inter_obj_adj = np.zeros((dataset.full_dataset.num_interactions, dataset.full_dataset.num_objects))
     inter_obj_adj[np.arange(interactions.shape[0]), interactions[:, 0]] = 1
@@ -88,10 +86,27 @@ def get_hoi_adjacency_matrix(dataset, isolate_null=None):
         return adj
 
 
-def get_noun_verb_adj_mat(dataset, isolate_null=None):
-    if isolate_null is None:
-        isolate_null = not cfg.link_null
+def get_noun_verb_adj_mat(dataset, isolate_null=True):
     noun_verb_links = torch.from_numpy((dataset.full_dataset.oa_pair_to_interaction >= 0).astype(np.float32))
     if isolate_null:
         noun_verb_links[:, 0] = 0
     return noun_verb_links
+
+
+def filter_on_score(scores, min_score=None, maxn=0, keep_one=True):
+    inds = np.argsort(scores)[::-1]
+    im_person_scores = scores[inds]
+    if min_score is not None:
+        to_keep = im_person_scores > min_score
+    else:
+        to_keep = np.ones_like(inds, dtype=bool)
+    if keep_one:
+        to_keep[0] = True
+    if maxn > 0:
+        to_keep[maxn:] = False
+    inds = inds[to_keep]
+    if min_score is not None:
+        assert np.all(im_person_scores[to_keep][1:] > min_score)
+        assert im_person_scores[to_keep][0] > min_score or keep_one
+        assert maxn == 0 or (np.all(im_person_scores[len(inds):maxn] <= min_score))
+    return inds
