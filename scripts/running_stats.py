@@ -5,11 +5,12 @@ from typing import Dict
 
 import numpy as np
 import torch
+
 from tensorboardX import SummaryWriter
 
 from config import cfg
 from lib.dataset.utils import Splits
-from lib.utils import Timer
+from lib.timer import Timer
 
 
 class History:

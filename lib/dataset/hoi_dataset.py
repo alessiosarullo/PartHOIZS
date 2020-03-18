@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 
 
@@ -16,6 +18,22 @@ class HoiDataset:
         self.interactions = np.array([[self.action_index[act], self.object_index[obj]] for act, obj in interactions_classes])  # [a, o]
         self.oa_pair_to_interaction = np.full([self.num_objects, self.num_actions], fill_value=-1, dtype=np.int)
         self.oa_pair_to_interaction[self.interactions[:, 1], self.interactions[:, 0]] = np.arange(self.num_interactions)
+
+    @property
+    def split_filenames(self):
+        raise NotImplementedError
+
+    @property
+    def split_img_labels(self):
+        raise NotImplementedError
+
+    @property
+    def split_hoi_triplets_data(self):
+        raise NotImplementedError
+
+    @property
+    def human_class(self) -> int:
+        return self.object_index['person']
 
     @property
     def interactions_str(self):
@@ -47,3 +65,6 @@ class HoiDataset:
 
     def get_img_dir(self, split):
         raise NotImplementedError
+
+    def get_fname_id(self, fname) -> int:
+        return int(os.path.splitext(fname)[0].split('_')[-1])

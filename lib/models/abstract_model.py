@@ -1,5 +1,6 @@
-from typing import Dict
+from typing import Dict, Union
 
+import numpy as np
 import torch
 from torch import nn as nn
 
@@ -19,3 +20,18 @@ class AbstractModel(nn.Module):
 
     def __call__(self, *args, **kwargs):
         return super().__call__(*args, **kwargs)
+
+
+class Prediction:
+    def __init__(self, prediction_dict=None):
+        self.part_state_scores = None  # type: Union[None, np.ndarray]
+        self.hoi_scores = None  # type: Union[None, np.ndarray]
+        self.obj_scores = None  # type: Union[None, np.ndarray]
+        self.seen_scores = None  # type: Union[None, np.ndarray]
+
+        if prediction_dict is not None:
+            # try:
+            #     prediction_dict['part_state_scores'] = prediction_dict['part_action_scores']  # FIXME remove
+            # except KeyError:
+            #     pass
+            self.__dict__.update(prediction_dict)

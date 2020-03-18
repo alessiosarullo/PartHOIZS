@@ -11,13 +11,13 @@ from config import cfg
 from lib.bbox_utils import compute_ious
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
 from lib.dataset.utils import Splits
+from lib.dataset.tin_utils import get_next_sp_with_pose, draw_relation
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('func', type=str, choices=sorted(FUNCS.keys()))
     parser.add_argument('--num_imgs', type=int, default=50)
-    parser.add_argument('--max_obj', type=int, default=0)
     parser.add_argument('--split', type=str, default='train')
     parser.add_argument('--debug', default=False, action='store_true')
     namespace = parser.parse_known_args()
@@ -85,7 +85,7 @@ def compute_edge_dists(kp_boxes, kp_1hot_mask, pc_obj_boxes, im_relevant_obj_per
     return edge_dist_to_obj_per_part
 
 
-def compute_obj_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh):
+def compute_obj_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh: HicoHake):
     obj_ious_per_part = np.zeros((hh.num_parts, im_obj_boxes.shape[0]))
     for part_idx, kps in enumerate(hh.part_to_kp):
         kp_boxes_for_part = im_kp_boxes[np.any(kp_1hot_mask[..., kps], axis=-1), :]
@@ -101,7 +101,7 @@ def compute_obj_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh):
     return obj_ious_per_part
 
 
-def compute_kp_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh):
+def compute_kp_boxes_ious(im_kp_boxes, kp_1hot_mask, im_obj_boxes, hh: HicoHake):
     kp_ious_per_part = np.zeros(hh.num_parts)
     for part_idx, kps in enumerate(hh.part_to_kp):
         kp_boxes_for_part = im_kp_boxes[np.any(kp_1hot_mask[..., kps], axis=-1), :]
@@ -149,7 +149,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
                 # print(f'No person/object data for image {idx}.')
                 continue
 
-            labels = hhkps.part_labels[idx, :]
+            labels = hhkps.img_pstate_labels[idx, :]
             per_part_interactiveness_labels = [labels[acts[-1]] == 0 for acts in hh.states_per_part]
 
             img_wh = hhkps.img_dims[idx]
@@ -260,7 +260,7 @@ def analyse_interactiveness(args, hh: HicoHake, split):
 def analyse_obj_coverage(args, hh: HicoHake, split):
     max_obj_per_img = args.max_obj
 
-    objs_per_img = np.minimum(1, hh.split_annotations[split] @ hh.interaction_to_object_mat)
+    objs_per_img = np.minimum(1, hh.split_img_labels[split] @ hh.interaction_to_object_mat)
 
     hhkps = HicoHakeKPSplit(split, full_dataset=hh)
 
@@ -308,6 +308,73 @@ def analyse_obj_coverage(args, hh: HicoHake, split):
     plt.savefig(os.path.join(save_dir, f'obj_coverage_max{max_obj_per_img}'))
 
 
+def analyse_pose_heatmaps(args, hh: HicoHake, split):
+    def get_skeleton(unscaled_human_boxes, human_poses, size, fade_skeleton):
+        # unscaled_human_boxes: P x 4
+        # human_poses: P x K x 3
+        P, K = human_poses.shape[:2]
+
+        unscaled_human_boxes = unscaled_human_boxes[:, None, :]  # P x 1 x 4
+
+        dims = unscaled_human_boxes[..., 2:] - unscaled_human_boxes[..., :2] + 1  # P x 1 x 2
+        ratios = (human_poses[..., :2] - unscaled_human_boxes[..., :2]) / dims  # P x K x 2
+
+        joints = np.zeros((P, K + 1, 2), dtype='int32')
+        joints[..., :K, :] = np.round(ratios * (size - 1)).astype(np.int)
+        joints[..., K, :] = (joints[..., 5, :] + joints[..., 6, :]) / 2
+
+        return draw_relation(joints[:, None, :, :], size=size, fade_skeleton=fade_skeleton, separate_channels=True)
+
+    D = cfg.ipsize
+    Q = 17  # number keypoint connections
+
+    save_dir = os.path.join('analysis', 'output', 'part_obj_pose_heatmaps', 'gt', split.value)
+    os.makedirs(save_dir, exist_ok=True)
+
+    hhkps = HicoHakeKPSplit(split=split, full_dataset=hh, no_feats=True)
+
+    fig, ax = plt.subplots(tight_layout=True)
+    n = len(hhkps) if args.num_imgs <= 0 else args.num_imgs
+    heatmaps = np.zeros((hh.num_interactions, Q, D, D))
+    for idx in range(n):
+        if idx % 1000 == 0 or idx == n - 1:
+            print(f'Image {idx + 1}/{n}.')
+
+        im_data = hhkps.img_data_cache[idx]
+        try:
+            person_inds = im_data['person_inds'][:1]
+        except KeyError:
+            # print(f'No person/object data for image {idx}.')
+            continue
+
+        labels = np.flatnonzero(hhkps.img_labels[idx, :].astype(bool))
+
+        person_boxes = hhkps.person_boxes[person_inds]
+        person_kps = hhkps.coco_kps[person_inds]
+        skeletons = get_skeleton(unscaled_human_boxes=person_boxes, human_poses=person_kps, size=D, fade_skeleton=False)
+        skeletons = skeletons.squeeze(axis=1).squeeze(axis=-1)
+        # TODO check if it makes more sense with a channel per part
+
+        # fig2, axs = plt.subplots(nrows=4, ncols=5, tight_layout=True)
+        # for q in range(Q):
+        #     axs[q // 5, q % 5].imshow(skeletons[0][q], cmap='gray')
+        # axs[-1, -1].imshow(skeletons[0].max(axis=0), cmap='gray')
+        # plt.show()
+
+        aggr_skeleton = skeletons.sum(axis=0)
+        heatmaps[labels] += aggr_skeleton
+    heatmaps /= hhkps.img_labels.sum(axis=0)[:, None, None, None]
+
+    for i, hm in enumerate(heatmaps):
+        if i % 10 == 0:
+            print(f'Class {i}.')
+        # for j, joint_hm in enumerate(hm):
+        #     ax.imshow(joint_hm, cmap='gray')
+        #     fig.savefig(os.path.join(save_dir, f'{i}_{j}.png'))
+        ax.imshow(hm.max(axis=0), cmap='gray')
+        fig.savefig(os.path.join(save_dir, f'{i}.png'))
+
+
 def analyse_hico_hake_kps(args):
     if args.debug:
         try:  # PyCharm debugging
@@ -325,7 +392,8 @@ def analyse_hico_hake_kps(args):
 
 
 FUNCS = {'i': analyse_interactiveness,
-         'o': analyse_obj_coverage}
+         'o': analyse_obj_coverage,
+         'hm': analyse_pose_heatmaps}
 
 if __name__ == '__main__':
     analyse_hico_hake_kps(get_args())

@@ -8,13 +8,13 @@ from matplotlib import pyplot as plt
 from sklearn.manifold import TSNE
 
 from config import cfg
-from lib.dataset.hico import HicoSplit, Hico
+from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
 from lib.dataset.utils import Splits
 from lib.models.abstract_model import AbstractModel
 from scripts.utils import get_all_models_by_name
 
 
-def save():
+def run_and_save(func, fname):
     cfg.parse_args(fail_if_missing=False)
     cfg.load()
 
@@ -25,24 +25,27 @@ def save():
     else:
         obj_inds = act_inds = None
 
-    splits = HicoSplit.get_splits(obj_inds=obj_inds, act_inds=act_inds)
-    train_split, val_split, test_split = splits[Splits.TRAIN], splits[Splits.VAL], splits[Splits.TEST]
-
-    # Model
+    train_split = HicoHakeKPSplit(split=Splits.TRAIN, full_dataset=HicoHake(), object_inds=obj_inds, action_inds=act_inds)
     model = get_all_models_by_name()[cfg.model](train_split)  # type: AbstractModel
-
     ckpt = torch.load(cfg.best_model_file, map_location='cpu')
     model.load_state_dict(ckpt['state_dict'])
 
-    model.eval()
-    _, act_class_embs = model.gcn()
-    act_class_embs = act_class_embs.cpu().numpy()
+    res = func(model)
 
     os.makedirs(cfg.output_analysis_path, exist_ok=True)
-    np.save(os.path.join(cfg.output_analysis_path, 'act_embs'), act_class_embs)
+    np.save(os.path.join(cfg.output_analysis_path, fname), res)
 
 
-def show():
+def save_act_embs():
+    def func(model):
+        model.eval()
+        _, act_class_embs = model.gcn()
+        return act_class_embs.cpu().numpy()
+
+    run_and_save(func=func, fname='act_embs')
+
+
+def show_act_tsne():
     # sys.argv[1:] = ['--save_dir', 'output/skzs/hico_zsk_gc_nobg_sl/asl1/2019-09-25_10-25-31_SINGLE']
     # sys.argv[1:] = ['--save_dir', 'output/skzs/hico_zsk_gc_nobg_Ra/Ra-10-03/2019-09-25_10-25-51_SINGLE/']
     sys.argv[1:] = ['--save_dir', 'output/skzs/hico_zsk_gc_nobg_sl_Ra/asl1_Ra-10-03/2019-09-25_14-21-33_SINGLE']
@@ -50,12 +53,12 @@ def show():
     cfg.parse_args(fail_if_missing=False)
     cfg.load()
 
-    dataset = Hico()
+    hh = HicoHake()
     n = 10
     print(' ' * 3, end='  ')
     for i in range(n):
         print(f'{i:<20d}', end=' ')
-    for i, a in enumerate(dataset.actions):
+    for i, a in enumerate(hh.actions):
         if i % n == 0:
             print()
             print(f'{i // n:3d}', end=': ')
@@ -64,7 +67,7 @@ def show():
 
     inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
     seen_act_inds = np.array(sorted(inds_dict[Splits.TRAIN.value]['act'].tolist()))
-    unseen_act_inds = np.setdiff1d(np.arange(dataset.num_actions), seen_act_inds)
+    unseen_act_inds = np.setdiff1d(np.arange(hh.num_actions), seen_act_inds)
 
     act_class_embs = np.load(os.path.join(cfg.output_analysis_path, 'act_embs.npy'))
     perplexity = 20.0
@@ -86,6 +89,6 @@ def show():
 
 if __name__ == '__main__':
     if torch.cuda.is_available():
-        save()
+        save_act_embs()
     else:
-        show()
+        show_act_tsne()

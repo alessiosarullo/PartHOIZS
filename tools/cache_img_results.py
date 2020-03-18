@@ -4,6 +4,7 @@ import h5py
 import numpy as np
 import torch
 import torch.utils.data
+from torchvision import transforms
 from torchvision.models import resnet152
 
 from config import cfg
@@ -46,10 +47,19 @@ def save_feats():
     splits = HicoSplit.get_splits()
     assert Splits.VAL not in splits
 
+    img_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
     vm = resnet152(pretrained=True)
     if torch.cuda.is_available():
+        device = torch.device('cuda')
         vm.cuda()
     else:
+        device = torch.device('cpu')
         print('!!!!!!!!!!!!!!!!! Running on CPU!')
     vm.eval()
     for split in [Splits.TRAIN, Splits.TEST]:
@@ -62,6 +72,7 @@ def save_feats():
             num_imgs = len(hds)
             for img_id in range(num_imgs):
                 img = hds.get_img(img_id)
+                img = img_transform(img).to(device=device)
                 img_feats, cl_unbounded_scores = forward(vm, img.unsqueeze(dim=0))
                 all_img_feats.append(img_feats.detach().cpu().numpy())
                 all_cl_unbounded_scores.append(cl_unbounded_scores.detach().cpu().numpy())

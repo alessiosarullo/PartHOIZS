@@ -5,10 +5,10 @@ import numpy as np
 from sklearn.metrics import average_precision_score
 
 from config import cfg
-from lib.containers import Prediction
+from lib.models.abstract_model import Prediction
 from lib.dataset.hico_hake import HicoHakeKPSplit
 from lib.eval.eval_utils import MetricFormatter, sort_and_filter
-from lib.utils import Timer
+from lib.timer import Timer
 
 
 class PartEvaluatorImg:
@@ -18,7 +18,7 @@ class PartEvaluatorImg:
         self.full_dataset = dataset_split.full_dataset
         self.metrics = {}  # type: Dict[str, np.ndarray]
 
-        self.gt_scores = self.full_dataset.split_part_annotations[self.dataset_split._data_split]
+        self.gt_scores = self.full_dataset.split_part_annotations[self.dataset_split.split]
 
     def load(self, fn):
         with open(fn, 'rb') as f:

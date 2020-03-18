@@ -1,6 +1,7 @@
+import os
 from typing import Dict, Type, Set
 
-import numpy as np
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from lib.models.abstract_model import AbstractModel
 
@@ -76,3 +77,33 @@ def print_params(model, breakdown=False):
                                                                                   '\n'.join(summary_strings),
                                                                                   '\n'.join(strings) if breakdown else '')
     print(s, flush=True)
+
+
+def get_runs_data(runs):
+    """
+    :param runs: list of directories, each representing a run
+    :return: data: dict with one entry per split. Each entry is `split`: {'values': dict, 'steps': list}. Values is another dict in the form
+        `metric`: NumPy array [num_runs, num_steps]. Example: data['Train']['values']['Act_loss'][0, :].
+    """
+    data = {'Train': {}, 'Val': {}, 'Test': {}}
+    for split in data.keys():
+        summary_iterators = [EventAccumulator(os.path.join(p, 'tboard', split)).Reload() for p in runs]
+        tags = summary_iterators[0].Tags()['scalars']
+        for it in summary_iterators:
+            assert it.Tags()['scalars'] == tags, (it.Tags()['scalars'], tags)
+
+        values_per_tag = {}
+        steps = []
+        for tag in tags:
+            for events in zip(*[acc.Scalars(tag) for acc in summary_iterators]):
+                values_per_tag.setdefault(tag, []).append([e.value for e in events])
+                if len({e.step for e in events}) > 1:
+                    print("!!!!!!!!!!! Different steps!", sorted({e.step for e in events}))
+
+                if len(values_per_tag.keys()) == 1:
+                    steps.append(events[0].step)
+        steps = np.array(steps)
+        values_per_tag = {tag: np.array(values).T for tag, values in values_per_tag.items()}
+
+        data[split] = {'values': values_per_tag, 'steps': steps}
+    return data

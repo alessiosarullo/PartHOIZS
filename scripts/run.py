@@ -11,16 +11,16 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config import cfg
-from lib.containers import PrecomputedMinibatch
-from lib.containers import Prediction
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
+from lib.dataset.hicodet_hake import HicoDetHakeKPSplit
 from lib.dataset.utils import Splits
 from lib.eval.evaluator_img import EvaluatorImg
 from lib.eval.part_evaluator_img import PartEvaluatorImg
-from lib.models.abstract_model import AbstractModel
+from lib.eval.seen_evaluator_img import SeenEvaluatorImg
+from lib.models.abstract_model import AbstractModel, Prediction
 from lib.radam import RAdam
-from lib.running_stats import RunningStats
-from lib.utils import Timer
+from scripts.running_stats import RunningStats
+from lib.timer import Timer
 from scripts.utils import print_params, get_all_models_by_name
 
 
@@ -45,7 +45,6 @@ class Launcher:
         cfg.print()
         self.detector = None  # type: Union[None, AbstractModel]
         self.train_split = None  # type: Union[None, HicoHakeKPSplit]
-        self.val_split = None  # type: Union[None, HicoHakeKPSplit]
         self.test_split = None  # type: Union[None, HicoHakeKPSplit]
         self.curr_train_iter = 0
         self.start_epoch = 0
@@ -96,8 +95,11 @@ class Launcher:
                 except KeyError:
                     pass
 
-        splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
-        self.train_split, self.val_split, self.test_split = splits[Splits.TRAIN], splits[Splits.VAL], splits[Splits.TEST]
+        if cfg.det:
+            splits = HicoDetHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+        else:
+            splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+        self.train_split, self.test_split = splits[Splits.TRAIN], splits[Splits.TEST]
 
         # Model
         self.detector = get_all_models_by_name()[cfg.model](self.train_split)  # type: AbstractModel
@@ -155,7 +157,7 @@ class Launcher:
         optimizer, scheduler = self.get_optim()
 
         train_loader = self.train_split.get_loader(batch_size=cfg.batch_size, num_workers=cfg.nworkers)
-        val_loader = self.val_split.get_loader(batch_size=cfg.batch_size)
+        val_loader = self.train_split.get_loader(batch_size=cfg.batch_size, holdout_set=True)
         test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
 
         training_stats = RunningStats(split=Splits.TRAIN, num_batches=len(train_loader),
@@ -307,7 +309,7 @@ class Launcher:
 
                 # if batch_idx % 20 == 0:
                 #     torch.cuda.empty_cache()  # Otherwise after some epochs the GPU goes out of memory. Seems to be a bug in PyTorch 0.4.1.
-                if batch_idx % 10 == 0:
+                if batch_idx % 100 == 0:
                     stats.print_times(epoch_idx, batch=batch_idx, curr_iter=self.curr_train_iter)
 
             if watched_values:
@@ -329,6 +331,14 @@ class Launcher:
             part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
             assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
             metric_dict.update(part_interactiveness_metric_dict)
+
+        if cfg.seen_pred:
+            print('Seen or unseen HOIs:')
+            seen_evaluator = SeenEvaluatorImg(data_loader.dataset)
+            seen_evaluator.evaluate_predictions(all_predictions)
+            seen_evaluator.save(cfg.eval_res_file_format % 'seen')
+            seen_metric_dict = {f'Seen_{k}': v for k, v in seen_evaluator.output_metrics().items()}
+            metric_dict.update(seen_metric_dict)
 
         if cfg.part_only:
             assert not cfg.no_part
@@ -367,8 +377,8 @@ class Launcher:
                 detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
 
                 oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
-                unseen_objects = np.array(sorted(set(range(self.train_split.full_dataset.num_objects)) - set(self.train_split.seen_objects)))
-                unseen_actions = np.array(sorted(set(range(self.train_split.full_dataset.num_actions)) - set(self.train_split.seen_actions)))
+                unseen_objects = np.array(sorted(set(range(self.train_split.dims.O)) - set(self.train_split.seen_objects)))
+                unseen_actions = np.array(sorted(set(range(self.train_split.dims.A)) - set(self.train_split.seen_actions)))
 
                 if unseen_objects.size > 0:
                     print('Unseen object, seen action:')
@@ -406,7 +416,6 @@ class Launcher:
     def data_loader_generator(self, data_loader, epoch_idx):
         for batch_idx, batch in enumerate(data_loader):
             try:
-                # type: PrecomputedMinibatch
                 batch.epoch = epoch_idx
                 batch.iter = self.curr_train_iter
             except AttributeError:

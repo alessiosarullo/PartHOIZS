@@ -4,7 +4,7 @@ import os
 import numpy as np
 from tensorboardX import SummaryWriter
 
-from lib.utils import get_runs_data
+from scripts.utils import get_runs_data
 
 
 def main():

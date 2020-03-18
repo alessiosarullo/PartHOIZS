@@ -48,6 +48,32 @@ def bce_loss(logits, labels, pos_weights=None, reduce=True):
     return loss
 
 
+def weighted_binary_cross_entropy_with_logits(logits, labels, pos_weights, neg_weights):
+    # Binary cross entropy with the addition of two sets of class weights. One set is used for positive examples the other one is used for
+    # negative examples.
+    if pos_weights is None and neg_weights is None:
+        return functional.binary_cross_entropy_with_logits(logits, labels)
+
+    s = logits
+    m = s.clamp(min=0)  # m = max(s, 0)
+    t = labels
+    u = pos_weights
+    v = neg_weights
+
+    xx = ((-m).exp() + (s - m).exp()).log()
+
+    # Trust
+    if u is not None and v is not None:
+        loss = v * m - t * (v * m + u * (s - m)) + ((1 - t) * v + u * t) * xx
+    elif u is not None and v is None:
+        loss = m - t * (m + u * (s - m)) + (1 - t + u * t) * xx
+    elif u is None and v is not None:
+        loss = v * m - t * (v * m + s - m) + ((1 - t) * v + t) * xx
+    else:
+        raise ValueError
+    return loss
+
+
 def LIS(x, w=None, k=None, T=None):  # defaults are as in the paper
     if T is None:
         if w is None and k is None:

@@ -4,6 +4,8 @@ import matplotlib
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+import matplotlib.patheffects as path_effects
+from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
 
 from lib.bbox_utils import rescale_masks_to_img
 
@@ -118,11 +120,10 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}", textcolors=("black", "whit
 
 
 def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_labels=True,
-             axes=None, vrange=None, cbar=True, bin_colours=False, grid=False, plot=True, title=None, log=False,
-             neg_color=None, zero_color=None, cmap='jet'):
-    lfsize = 8
+             axes=None, vrange=None, cbar=True, bin_colours=None, grid=False, plot=True, title=None, log=False,
+             neg_color=None, zero_color=None, cmap='jet', figsize=(16, 9), annotate=False, fsize=8, fix_cbar_height=False):
     if axes is None:
-        plt.figure(figsize=(16, 9))
+        plt.figure(figsize=figsize)
         ax = plt.gca()
     else:
         ax = axes
@@ -136,7 +137,14 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
         else:
             vrange = (mat_min, mat_max)
 
-    num_colors = 5 if bin_colours else 256
+    if bin_colours is None or bin_colours is False:
+        num_colors = 256
+    else:
+        if bin_colours is True:
+            num_colors = 5
+        else:
+            assert isinstance(bin_colours, int)
+            num_colors = bin_colours
     cmap = plt.get_cmap(cmap, lut=num_colors)
     if neg_color:
         cmap.set_under(np.array(neg_color))
@@ -154,10 +162,15 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
         mat_ax = ax.matshow(mat, cmap=cmap, vmin=vrange[0], vmax=vrange[1])
 
     if cbar:
-        plt.colorbar(mat_ax, ax=ax,
-                     # fraction=0.04,
-                     pad=0.06,
-                     )
+        if fix_cbar_height:  # FIXME remove this option
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.5)
+            plt.colorbar(mat_ax, cax=cax)
+        else:
+            plt.colorbar(mat_ax, ax=ax,
+                         # fraction=0.04,
+                         pad=0.06,
+                         )
 
     y_tick_labels = [l.replace('_', ' ') for l in yticklabels]
     y_ticks = np.arange(len(y_tick_labels))
@@ -167,7 +180,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     maj_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(y_inds, y_tick_labels)][::2]
     ax.set_yticks(maj_ticks)
     ax.set_yticklabels(maj_tick_labels)
-    ax.tick_params(axis='y', which='major', left=True, labelleft=True, right=True, labelright=False, labelsize=lfsize)
+    ax.tick_params(axis='y', which='major', left=True, labelleft=True, right=True, labelright=False, labelsize=fsize)
 
     min_ticks = y_ticks[1::2]
     ax.set_yticks(min_ticks, minor=True)
@@ -176,7 +189,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     else:
         min_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(y_inds, y_tick_labels)][1::2]
     ax.set_yticklabels(min_tick_labels, minor=True)
-    ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels, right=True, labelright=alternate_labels, labelsize=lfsize)
+    ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels, right=True, labelright=alternate_labels, labelsize=fsize)
 
     x_tick_labels = [l.replace('_', ' ').strip() for l in xticklabels]
     x_ticks = np.arange(len(x_tick_labels))
@@ -186,7 +199,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     maj_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(x_inds, x_tick_labels)][::2]
     ax.set_xticks(maj_ticks)
     ax.set_xticklabels(maj_tick_labels, rotation=45, ha='left', rotation_mode='anchor')
-    ax.tick_params(axis='x', which='major', top=True, labeltop=True, bottom=True, labelbottom=False, labelsize=lfsize)
+    ax.tick_params(axis='x', which='major', top=True, labeltop=True, bottom=True, labelbottom=False, labelsize=fsize)
 
     min_ticks = x_ticks[1::2]
     ax.set_xticks(min_ticks, minor=True)
@@ -196,7 +209,13 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     else:
         min_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(x_inds, x_tick_labels)][1::2]
         ax.set_xticklabels(min_tick_labels, minor=True, rotation=45, ha='left', rotation_mode='anchor')
-    ax.tick_params(axis='x', which='minor', top=True, labeltop=not alternate_labels, bottom=True, labelbottom=alternate_labels, labelsize=lfsize)
+    ax.tick_params(axis='x', which='minor', top=True, labeltop=not alternate_labels, bottom=True, labelbottom=alternate_labels, labelsize=fsize)
+
+    if annotate:
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                text = ax.text(j, i, f'{mat[i, j]:.2f}', ha='center', va='center', color='k', fontsize=fsize)
+                # text.set_path_effects([path_effects.Stroke(linewidth=2, foreground='k'), path_effects.Normal()])
 
     if title is not None:
         ax.set_title(title)

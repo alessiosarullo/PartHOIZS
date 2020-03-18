@@ -98,25 +98,36 @@ def pattern_bbox_transform(human_boxes, object_boxes, size, part_boxes=None):
     return np.round(human_boxes), np.round(object_boxes), np.round(part_boxes) if part_boxes_orig is not None else None
 
 
-def draw_relation(joints, size):
+def draw_relation(joints, size, fade_skeleton, separate_channels=False):
     # joints: P x M x K x 2
 
     joint_relation = [[1, 3], [2, 4], [0, 1], [0, 2], [0, 17], [5, 17], [6, 17], [5, 7], [6, 8], [7, 9], [8, 10], [11, 17], [12, 17], [11, 13],
                       [12, 14], [13, 15], [14, 16]]
-    color = [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+    Q = len(joint_relation)
+
+    if fade_skeleton:
+        color = [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+    else:
+        color = [1.0] * Q
 
     P, M = joints.shape[:2]
-    skeleton = np.zeros((P, M, size, size, 1), dtype="float32")
+    if separate_channels:
+        skeleton = np.zeros((P, M, Q, size, size, 1), dtype="float32")
+    else:
+        skeleton = np.zeros((P, M, size, size, 1), dtype="float32")
 
     for p in range(P):
         for m in range(M):
             for i, (j1, j2) in enumerate(joint_relation):
-                cv2.line(skeleton[p, m], tuple(joints[p, m, j1, :]), tuple(joints[p, m, j2, :]), color[i])
+                if separate_channels:
+                    cv2.line(skeleton[p, m, i], tuple(joints[p, m, j1, :]), tuple(joints[p, m, j2, :]), color[i])
+                else:
+                    cv2.line(skeleton[p, m], tuple(joints[p, m, j1, :]), tuple(joints[p, m, j2, :]), color[i])
 
     return skeleton
 
 
-def get_skeleton(unscaled_human_boxes, human_poses, scaled_human_boxes, size):
+def get_skeleton(unscaled_human_boxes, human_poses, scaled_human_boxes, size, fade_skeleton):
     # unscaled_human_boxes: P x 4
     # human_poses: P x K x 3
     # scaled_human_boxes: P x M x 4
@@ -135,7 +146,7 @@ def get_skeleton(unscaled_human_boxes, human_poses, scaled_human_boxes, size):
     joints[..., :K, :] = np.minimum(size - 1, np.round(ratios * pattern_dims + scaled_human_boxes[..., :2]).astype(np.int))
     joints[..., K, :] = (joints[..., 5, :] + joints[..., 6, :]) / 2
 
-    return draw_relation(joints, size=size)
+    return draw_relation(joints, size=size, fade_skeleton=fade_skeleton)
 
 
 def get_patterns(boxes, size, fill_boxes):
@@ -151,7 +162,7 @@ def get_patterns(boxes, size, fill_boxes):
     return patterns
 
 
-def get_next_sp_with_pose(human_boxes, object_boxes, human_poses, *, size=64, fill_boxes=True, part_boxes=None):
+def get_next_sp_with_pose(human_boxes, object_boxes, human_poses, *, size=32, fill_boxes=True, part_boxes=None, fade_skeleton=True):
     """
     Return channels: ([part boxes], human box, object box, skeleton)
     :param human_boxes:
@@ -180,7 +191,7 @@ def get_next_sp_with_pose(human_boxes, object_boxes, human_poses, *, size=64, fi
     patterns = get_patterns(boxes, size, fill_boxes=fill_boxes)
     patterns = patterns.reshape((P, M, Kplus2, size, size)).transpose([0, 1, 3, 4, 2])
 
-    skeleton = get_skeleton(human_boxes, human_poses, humans, size=size)
+    skeleton = get_skeleton(human_boxes, human_poses, humans, size=size, fade_skeleton=fade_skeleton)
 
     patterns = np.concatenate((patterns, skeleton), axis=-1)
 

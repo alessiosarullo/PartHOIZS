@@ -8,7 +8,9 @@ import matplotlib
 try:
     matplotlib.use('Qt5Agg')
     sys.argv[1:] = ['hhkps', '--tin', '--max_ppl', '3', '--max_obj', '3',
-                    '--num_imgs', '1000'
+                    '--num_imgs', '-1',
+                    # '--rnd',
+                    '--filter'
                     ]
     # sys.argv[1:] = ['hhkps', '--vis',
     #                 # '--no_kp',
@@ -28,6 +30,7 @@ from analysis.utils import analysis_hub
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
 from lib.dataset.utils import Splits
 from lib.dataset.tin_utils import get_next_sp_with_pose
+import lib.utils
 
 
 def get_args():
@@ -43,6 +46,8 @@ def get_args():
     parser.add_argument('--tin', default=False, action='store_true')
     parser.add_argument('--max_ppl', type=int, default=0)
     parser.add_argument('--max_obj', type=int, default=0)
+    parser.add_argument('--rnd', default=False, action='store_true')
+    parser.add_argument('--filter', default=False, action='store_true')
     return parser.parse_args()
 
 
@@ -67,10 +72,47 @@ def vis_hico_hake_kps():
     hh = HicoHake()
     hhkps = HicoHakeKPSplit(split=split, full_dataset=hh, no_feats=True)
 
-    all_t = 0
+    seen_objs, unseen_objs, seen_acts, unseen_acts, seen_interactions, unseen_interactions = \
+        lib.utils.get_zs_classes(hico_hake=hh, fname='zero-shot_inds/seen_inds_4.pkl.push')
+    objects_str = [f'{o}{"*" if i in unseen_objs else ""}' for i, o in enumerate(hh.objects)]
+    actions_str = [f'{a}{"*" if i in unseen_acts else ""}' for i, a in enumerate(hh.actions)]
+    interactions_str = [f'{actions_str[a]} {objects_str[o]}' for a, o in hh.interactions]
 
     n = len(hhkps) if args.num_imgs <= 0 else args.num_imgs
-    for idx in range(n):
+    all_inds = list(range(n))
+    if args.rnd:
+        seed = np.random.randint(1_000_000_000)
+        print('Seed:', seed)
+        np.random.seed(seed)
+        np.random.shuffle(all_inds)
+
+    if args.filter:
+        queries_str = [
+            # ['cook', 'pizza'],
+            # ['eat', 'sandwich'],
+            # ['eat', 'apple'],
+            # ['stab', 'person'],
+            # ['hug', 'cat'],
+            ['block', '*'],
+        ]
+        queries = set()
+        for a, o in queries_str:
+            if o == '*':
+                o = np.arange(hh.num_objects)
+            elif isinstance(o, (list, tuple)):
+                o = np.array([hh.object_index[x] for x in o])
+            else:
+                o = hh.object_index[o]
+            queries.update({x for x in np.atleast_1d(hh.oa_pair_to_interaction[o, hh.action_index[a]])})
+        queries = np.array(sorted(queries - {-1}))
+        if np.any(queries < 0):
+            raise ValueError('Unknown interaction(s).')
+        inds = np.flatnonzero(np.any(hhkps.img_labels[:, queries], axis=1))
+        print(f'{len(inds)} images retrieved.')
+        all_inds = sorted(set(all_inds) & set(inds.tolist()))
+
+    all_t = 0
+    for idx in all_inds:
         # if idx != 27272:  # FIXME delete
         #     continue
         # rotated images:
@@ -88,13 +130,13 @@ def vis_hico_hake_kps():
             continue
 
         # Print annotations
-        img_anns = hh.split_annotations[hhkps._data_split][idx, :]
+        img_anns = hh.split_img_labels[hhkps.split][idx, :]
         gt_str = []
         for i, s in enumerate(img_anns):
             act_ind = hh.interactions[i, 0]
             obj_ind = hh.interactions[i, 1]
             if s > 0:
-                gt_str.append(f'{hh.actions[act_ind]} {hh.objects[obj_ind]}')
+                gt_str.append(f'{actions_str[act_ind]} {objects_str[obj_ind]}')
         print(f'\t\t{", ".join(gt_str)}')
 
         # Visualise
