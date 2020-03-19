@@ -174,8 +174,8 @@ class HicoHakeKPSplit(HicoHakeSplit):
         #####################################################
         self.objects_fn = cfg.precomputed_feats_format % ('hicoobjs', 'mask_rcnn_X_101_32x8d_FPN_3x',
                                                           f'{self.split.value}{"__nofeats" if no_feats else ""}')
-        self.obj_boxes = PrecomputedFilesHandler.get(self.objects_fn, 'boxes')
-        self.obj_scores = PrecomputedFilesHandler.get(self.objects_fn, 'box_scores')[:, hico_to_coco_mapping]
+        self.obj_boxes = PrecomputedFilesHandler.get(self.objects_fn, 'boxes', load_in_memory=True)
+        self.obj_scores = PrecomputedFilesHandler.get(self.objects_fn, 'box_scores', load_in_memory=True)[:, hico_to_coco_mapping]
         if not no_feats:
             self.obj_feats = PrecomputedFilesHandler.get(self.objects_fn, 'box_feats')
             self.obj_feats_dim = self.obj_feats.shape[-1]
@@ -187,10 +187,10 @@ class HicoHakeKPSplit(HicoHakeSplit):
         #####################################################
         self.keypoints_fn = cfg.precomputed_feats_format % \
                             ('hicokps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}{"__nofeats" if no_feats else ""}')
-        self.person_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'boxes')
-        self.coco_kps = PrecomputedFilesHandler.get(self.keypoints_fn, 'keypoints')
-        self.person_scores = PrecomputedFilesHandler.get(self.keypoints_fn, 'scores')
-        self.hake_kp_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_boxes')
+        self.person_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'boxes', load_in_memory=True)
+        self.coco_kps = PrecomputedFilesHandler.get(self.keypoints_fn, 'keypoints', load_in_memory=True)
+        self.person_scores = PrecomputedFilesHandler.get(self.keypoints_fn, 'scores', load_in_memory=True)
+        self.hake_kp_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_boxes', load_in_memory=True)
         assert self.hake_kp_boxes.shape[1] == self.full_dataset.num_keypoints
         if not no_feats:
             self.hake_kp_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats')
@@ -369,18 +369,20 @@ class HicoHakeKPSplit(HicoHakeSplit):
                 pass
 
         valid_person_inds_mask = ~np.isnan(person_inds)
-        valid_person_inds = person_inds[valid_person_inds_mask].astype(np.int)
-        ppl_boxes[valid_person_inds_mask] = self.person_boxes[valid_person_inds]
-        ppl_feats[valid_person_inds_mask] = self.person_feats[valid_person_inds]
-        coco_kps[valid_person_inds_mask] = self.coco_kps[valid_person_inds]
-        kp_boxes[valid_person_inds_mask] = self.hake_kp_boxes[valid_person_inds]
-        kp_feats[valid_person_inds_mask] = self.hake_kp_feats[valid_person_inds]
+        valid_person_mask = np.zeros(self.person_boxes.shape[0], dtype=bool)  # using mask instead of inds in case H5 file are not loaded in memory.
+        valid_person_mask[person_inds[valid_person_inds_mask].astype(np.int)] = True
+        ppl_boxes[valid_person_inds_mask] = self.person_boxes[valid_person_mask]
+        ppl_feats[valid_person_inds_mask] = self.person_feats[valid_person_mask, ...]
+        coco_kps[valid_person_inds_mask] = self.coco_kps[valid_person_mask]
+        kp_boxes[valid_person_inds_mask] = self.hake_kp_boxes[valid_person_mask]
+        kp_feats[valid_person_inds_mask] = self.hake_kp_feats[valid_person_mask, ...]
 
         valid_obj_inds_mask = ~np.isnan(obj_inds)
-        valid_obj_inds = obj_inds[valid_obj_inds_mask].astype(np.int)
-        obj_boxes[valid_obj_inds_mask] = self.obj_boxes[valid_obj_inds]
-        obj_scores[valid_obj_inds_mask] = self.obj_scores[valid_obj_inds]
-        obj_feats[valid_obj_inds_mask] = self.obj_feats[valid_obj_inds]
+        valid_obj_mask = np.zeros(self.obj_boxes.shape[0], dtype=bool)
+        valid_obj_mask[obj_inds[valid_obj_inds_mask].astype(np.int)] = True
+        obj_boxes[valid_obj_inds_mask] = self.obj_boxes[valid_obj_mask]
+        obj_scores[valid_obj_inds_mask] = self.obj_scores[valid_obj_mask]
+        obj_feats[valid_obj_inds_mask] = self.obj_feats[valid_obj_mask, ...]
 
         t_ppl_boxes = torch.from_numpy(ppl_boxes).to(device=device)
         t_ppl_feats = torch.from_numpy(ppl_feats).to(device=device)
