@@ -1,6 +1,5 @@
 # Specific files/directories
 toy*.py
-tmp*
 *jobscript*
 CoreNLP/
 cache/

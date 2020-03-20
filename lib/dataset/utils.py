@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -39,6 +40,13 @@ class Splits(Enum):
     TRAIN = 'train'
     VAL = 'val'
     TEST = 'test'
+
+class HoiData(NamedTuple):
+    im_idx: int
+    fname_id: int
+    p_idx: int
+    o_idx: int
+    hoi_classes: np.ndarray
 
 
 def get_hico_to_coco_mapping(hico_objects, split_objects=None):

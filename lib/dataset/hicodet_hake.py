@@ -1,4 +1,4 @@
-from typing import List, NamedTuple
+from typing import List
 
 import numpy as np
 import torch
@@ -6,19 +6,11 @@ import torch
 from config import cfg
 from lib.dataset.hico_hake import HicoHakeKPSplit, Minibatch, Dims
 from lib.dataset.tin_utils import get_next_sp_with_pose
-from lib.dataset.utils import Splits
+from lib.dataset.utils import Splits, HoiData
 from lib.timer import Timer
 import torch.utils.data
 from lib.bbox_utils import compute_ious
-from torch.utils.data import Subset
 
-
-class HoiData(NamedTuple):
-    im_idx: int
-    fname_id: int
-    p_idx: int
-    o_idx: int
-    hoi_classes: np.ndarray
 
 def hoi_gt_assignments(ex, boxes_ext, box_labels, neg_ratio=3, gt_iou_thr=0.5):
     raise NotImplementedError  # TODO
