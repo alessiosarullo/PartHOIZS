@@ -14,7 +14,7 @@ class EvaluatorImg(BaseEvaluator):
     def __init__(self, dataset_split: HicoSplit):
         super().__init__(dataset_split)
 
-        self.gt_scores = self.full_dataset.split_img_labels[self.dataset_split.split]
+        self.gt_scores = self.full_dataset.split_labels[self.dataset_split.split]
 
     @property
     def gt_hoi_labels(self):

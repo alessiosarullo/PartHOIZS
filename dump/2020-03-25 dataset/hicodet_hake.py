@@ -4,10 +4,9 @@ import numpy as np
 import torch
 
 from config import cfg
-from lib.dataset.hoi_dataset_split import HoiExtraFeatProvider
-from lib.dataset.hico_hake import HicoHake, HicoHakeSplit
+from lib.dataset.hico_hake import HicoHakeKPSplit, Minibatch, Dims
 from lib.dataset.tin_utils import get_next_sp_with_pose
-from lib.dataset.utils import Splits, HoiData, Minibatch, Dims
+from lib.dataset.utils import Splits, HoiData
 from lib.timer import Timer
 import torch.utils.data
 from lib.bbox_utils import compute_ious
@@ -72,28 +71,57 @@ def hoi_gt_assignments(ex, boxes_ext, box_labels, neg_ratio=3, gt_iou_thr=0.5):
     return ho_infos, action_labels
 
 
-class HicoDetHakeSplit(HicoHakeSplit):
-    def __init__(self,split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self._extra_info_provider = HoiExtraFeatProvider(ds=self, no_feats=no_feats)
-        # self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)  # TODO
+class HicoDetHakeKPSplit(HicoHakeKPSplit):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.cache_tin:
+            raise NotImplementedError
+        self.hoi_data_cache = self._compute_hoi_data()  # type: List[HoiData]
+        self.hoi_data_cache_np = np.stack([np.concatenate([x[:-1], x[-1]]) for x in self.hoi_data_cache])  # type: np.ndarray[np.int]
 
-    def _get_labels(self):
-        return self.full_dataset._split_det_data[self.split].labels
+        self.hoi_labels = self.hoi_data_cache_np[:, 4:]
+        if self.seen_interactions.size < self.full_dataset.num_interactions:
+            all_labels = self.hoi_labels
+            self.hoi_labels = np.zeros_like(all_labels)
+            self.hoi_labels[:, self.seen_interactions] = all_labels[:, self.seen_interactions]
+        self.non_empty_split_inds = np.flatnonzero(np.any(self.hoi_labels, axis=1))
 
-    @classmethod
-    def instantiate_full_dataset(cls) -> HicoHake:
-        return HicoHake(hicodet=True)
+    def _compute_hoi_data(self):
+        """
+        Fields: 'fname_id', 'person_idx', 'obj_idx', 'hoi_class'
+        """
+        det_data = self.full_dataset._split_det_data[self.split]
+        im_idx_to_ho_pairs_inds = {}
+        for i, (image_idx, hum_idx, obj_idx) in enumerate(det_data.ho_pairs):
+            im_idx_to_ho_pairs_inds.setdefault(image_idx, []).append(i)
+        im_idx_to_ho_pairs_inds = {k: np.array(v) for k, v in im_idx_to_ho_pairs_inds.items()}
+
+        all_hoi_data = []
+        for im_idx, imdata in enumerate(self.img_data_cache):
+            if 'person_inds' in imdata and 'obj_inds' in imdata:
+                ho_pairs_inds = im_idx_to_ho_pairs_inds[im_idx]
+                gt_ho_pairs = det_data.ho_pairs[ho_pairs_inds, 1:]
+                gt_hoi_labels = det_data.labels[ho_pairs_inds, :]
+                #TODO
+                for p in imdata.get('person_inds', []):
+                    for o in imdata.get('obj_inds', []):
+                        hoi_data = HoiData(im_idx=im_idx,
+                                           fname_id=imdata['fname_id'],
+                                           p_idx=p,
+                                           o_idx=o,
+                                           hoi_classes=self.img_labels[im_idx, :],  # FIXME
+                                           )
+                        all_hoi_data.append(hoi_data)
+        return all_hoi_data
 
     @property
     def dims(self) -> Dims:
-        F_kp, F_obj = self._extra_info_provider.kp_net_dim, self._extra_info_provider.obj_feats_dim
-        return super().dims._replace(P=1, M=1, F_kp=F_kp, F_obj=F_obj)  # each example is an interaction, so 1 person and 1 object
+        return super().dims._replace(P=1, M=1)  # each example is an interaction, so 1 person and 1 object
 
     def hold_out(self, ratio):
         if not cfg.no_filter_bg_only:
             print('!!!!!!!!!! Not filtering background-only images.')
-        num_examples = len(self._extra_info_provider.hoi_data_cache)
+        num_examples = len(self.hoi_data_cache)
         example_ids = np.arange(num_examples)
         num_examples_to_keep = num_examples - int(num_examples * ratio)
         keep_inds = np.random.choice(example_ids, size=num_examples_to_keep, replace=False)
@@ -131,27 +159,81 @@ class HicoDetHakeSplit(HicoHakeSplit):
     #     return data_loader
 
     def __len__(self):
-        return len(self._extra_info_provider.hoi_data_cache)
+        return len(self.hoi_data_cache)
 
-    def _collate(self, idx_list, device):  # FIXME
+    def _collate(self, idx_list, device):
+        # This assumes the filtering has been done on initialisation (i.e., there are no more people/objects than the max number)
         Timer.get('GetBatch').tic()
-
         idxs = np.array(idx_list)
-        im_idxs = self._extra_info_provider.hoi_data_cache_np[idxs, 0]
-        mb = self._extra_info_provider.collate(idx_list, device)
-        if self.split != Splits.TEST:
-            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            pstate_labels = torch.tensor(self.img_pstate_labels[im_idxs, :], dtype=torch.float32, device=device)
-        else:
-            img_labels = pstate_labels = None
-        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
+        im_idxs = self.hoi_data_cache_np[idxs, 0]
 
+        # Example data
+        ex_ids = [f'ex{idx}' for idx in idxs]
+        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)  # FIXME
+
+        # Image data
+        im_ids = [f'{self.split.value}_{idx}' for idx in idxs]
+        im_feats = feats
+        orig_img_wh = torch.tensor(self.img_dims[idxs, :], dtype=torch.float32, device=device)
+
+        dims = self.dims
+        P, M, K_coco, K_hake, B, O, F_kp, F_obj, D = dims.P, dims.M, dims.K_coco, dims.K_hake, dims.B, dims.O, dims.F_kp, dims.F_obj, dims.D
+        N = idxs.size
+
+        person_inds = self.hoi_data_cache_np[idxs, 2].astype(np.int, copy=False)
+        obj_inds = self.hoi_data_cache_np[idxs, 3].astype(np.int, copy=False)
+
+        ppl_boxes = self.person_boxes[person_inds]
+        ppl_feats = self.person_feats[person_inds]
+        coco_kps = self.coco_kps[person_inds]
+        kp_boxes = self.hake_kp_boxes[person_inds]
+        kp_feats = self.hake_kp_feats[person_inds]
+
+        obj_boxes = self.obj_boxes[obj_inds]
+        obj_scores = self.obj_scores[obj_inds]
+        obj_feats = self.obj_feats[obj_inds]
+
+        t_ppl_boxes = torch.from_numpy(ppl_boxes).to(device=device)
+        t_ppl_feats = torch.from_numpy(ppl_feats).to(device=device)
+        t_coco_kps = torch.from_numpy(coco_kps).to(device=device)
+        t_kp_boxes = torch.from_numpy(kp_boxes).to(device=device)
+        t_kp_feats = torch.from_numpy(kp_feats).to(device=device)
+        t_obj_boxes = torch.from_numpy(obj_boxes).to(device=device)
+        t_obj_scores = torch.from_numpy(obj_scores).to(device=device)
+        t_obj_feats = torch.from_numpy(obj_feats).to(device=device)
+
+        if self.split != Splits.TEST:
+            labels = torch.tensor(self.hoi_labels[idxs, :], dtype=torch.float32, device=device)
+            part_labels = torch.tensor(self.img_pstate_labels[im_idxs, :], dtype=torch.float32, device=device)
+        else:
+            labels = part_labels = None
+
+        mb = Minibatch(ex_data=[ex_ids, feats],
+                       im_data=[im_ids, im_feats, orig_img_wh],
+                       person_data=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
+                       obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
+                       ex_labels=labels,
+                       pstate_labels=part_labels,
+                       other=[])
+        if cfg.tin:
+            assert P == M == 1
+            interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + K_hake), dtype=np.float32)
+            for i in range(N):
+                pattern = get_next_sp_with_pose(human_boxes=ppl_boxes[i, 0],
+                                                human_poses=coco_kps[i, 0],
+                                                object_boxes=obj_boxes[i, 0],
+                                                size=D,
+                                                part_boxes=kp_boxes[i, 0, :, :4]
+                                                )
+                interactiveness_patterns[i] = pattern
+            t_interactiveness_patterns = torch.from_numpy(interactiveness_patterns).to(device=device)
+            mb.person_data.append(t_interactiveness_patterns)
         Timer.get('GetBatch').toc(discard=5)
         return mb
 
 
 class BalancedTripletMLSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset: HicoDetHakeSplit, hoi_batch_size, drop_last, shuffle):
+    def __init__(self, dataset: HicoDetHakeKPSplit, hoi_batch_size, drop_last, shuffle):
         super().__init__(dataset)
         if not drop_last:
             raise NotImplementedError()

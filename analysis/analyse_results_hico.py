@@ -57,7 +57,7 @@ class Analyser:
         # self.ph_bins = np.arange(self.ph_num_bins + 1) / self.ph_num_bins
         # self.prediction_act_hist = np.zeros((self.ph_bins.size, self.dataset_split.num_actions), dtype=np.int)
 
-        gt_hoi_labels = self.full_dataset.split_img_labels[self.dataset_split.split]
+        gt_hoi_labels = self.full_dataset.split_labels[self.dataset_split.split]
         gt_hoi_labels[gt_hoi_labels < 0] = 0
         self.gt_hoi_labels = gt_hoi_labels
 
@@ -214,7 +214,7 @@ def print_predictions():
         print(f'{img_id:5d}')
         # Objects
         if prediction.obj_scores is not None:
-            obj_anns = (hh.split_img_labels[res_split][idx, :] @ hh.interaction_to_object_mat) > 0
+            obj_anns = (hh.split_labels[res_split][idx, :] @ hh.interaction_to_object_mat) > 0
             obj_scores = np.squeeze(prediction.obj_scores, axis=0)
             inds = obj_scores.argsort()[::-1]
             obj_pred_str = []
@@ -231,7 +231,7 @@ def print_predictions():
                 print(f'{"":5s} {"":10s} MISS {", ".join(obj_misses_str)}')
 
         # Interactions
-        hoi_anns = (hh.split_img_labels[res_split][idx, :] > 0)
+        hoi_anns = (hh.split_labels[res_split][idx, :] > 0)
         hoi_scores = np.squeeze(prediction.hoi_scores, axis=0)
         inds = hoi_scores.argsort()[::-1]
         hoi_pred_str = []
@@ -276,7 +276,7 @@ def print_predictions():
 
         # Visualise
         if args.vis:
-            img = Image.open(os.path.join(hh.get_img_dir(res_split), im_fn))
+            img = Image.open(hh.get_img_path(res_split, im_fn))
             visualizer = Visualizer(img)
             vis_output = visualizer.output
             plt.imshow(vis_output.get_image())
@@ -316,7 +316,7 @@ def save_pstate_hoi_att():
 
         # GT
         split = Splits.TRAIN
-        inters = hh.split_img_labels[split]
+        inters = hh.split_labels[split]
         part_states = hh.split_part_annotations[split]
         fg_part_states = np.concatenate([inds[:-1] for inds in hh.states_per_part])
         pstate_inters_cooccs = part_states[:, fg_part_states].T @ inters

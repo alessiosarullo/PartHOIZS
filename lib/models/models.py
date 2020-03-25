@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit, Minibatch
+from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.utils import Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, \

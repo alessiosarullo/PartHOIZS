@@ -79,12 +79,12 @@ def vis_hico_hake_kps():
     interactions_str = [f'{actions_str[a]} {objects_str[o]}' for a, o in hh.interactions]
 
     n = len(hhkps) if args.num_imgs <= 0 else args.num_imgs
-    all_inds = list(range(n))
+    img_inds = list(range(n))
     if args.rnd:
         seed = np.random.randint(1_000_000_000)
         print('Seed:', seed)
         np.random.seed(seed)
-        np.random.shuffle(all_inds)
+        np.random.shuffle(img_inds)
 
     if args.filter:
         queries_str = [
@@ -107,12 +107,13 @@ def vis_hico_hake_kps():
         queries = np.array(sorted(queries - {-1}))
         if np.any(queries < 0):
             raise ValueError('Unknown interaction(s).')
-        inds = np.flatnonzero(np.any(hhkps.img_labels[:, queries], axis=1))
+
+        inds = np.flatnonzero(np.any(hhkps.labels[:, queries], axis=1))  # FIXME this assumes labels are for images
         print(f'{len(inds)} images retrieved.')
-        all_inds = sorted(set(all_inds) & set(inds.tolist()))
+        img_inds = sorted(set(img_inds) & set(inds.tolist()))
 
     all_t = 0
-    for idx in all_inds:
+    for idx in img_inds:
         # if idx != 27272:  # FIXME delete
         #     continue
         # rotated images:
@@ -120,17 +121,16 @@ def vis_hico_hake_kps():
         #     'test2015': [3183, 7684, 8435, 8817],
         fname = hh.split_filenames[split][idx]
 
-        path = os.path.join(hh.get_img_dir(split), fname)
         print(f'Image {idx + 1:6d}/{n}, file {fname}.')
 
         try:
-            img = Image.open(path)
+            img = Image.open(hh.get_img_path(split, fname))
         except:
             print(f'Error on image {idx}: {fname}.')
             continue
 
         # Print annotations
-        img_anns = hh.split_img_labels[hhkps.split][idx, :]
+        img_anns = hh.split_labels[hhkps.split][idx, :]
         gt_str = []
         for i, s in enumerate(img_anns):
             act_ind = hh.interactions[i, 0]

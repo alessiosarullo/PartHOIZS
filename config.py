@@ -38,7 +38,6 @@ class Configs:
 
         # Null/background
         self.no_filter_bg_only = False
-        self.keep_unlabelled = False
         self.null_as_bg = False
 
         # Image

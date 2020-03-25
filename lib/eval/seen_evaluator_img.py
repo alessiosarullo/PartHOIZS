@@ -13,7 +13,7 @@ from lib.timer import Timer
 class SeenEvaluatorImg(BaseEvaluator):
     def __init__(self, dataset_split: HicoSplit):
         super().__init__(dataset_split)
-        gt_scores = self.full_dataset.split_img_labels[self.dataset_split.split]
+        gt_scores = self.full_dataset.split_labels[self.dataset_split.split]
         unseen_interactions = np.setdiff1d(np.arange(self.full_dataset.num_interactions), self.dataset_split.seen_interactions)
         self.gt_scores = ~gt_scores[:, unseen_interactions].any(axis=1, keepdims=True)
 

@@ -8,59 +8,28 @@ from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.utils import Splits, HoiTripletsData
-from lib.timer import Timer
-import torch
-
-
-class VCocoKPSplit(HicoHakeSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self.add_extra_info(no_feats=no_feats)
-        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)
-
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-
-        mb = self._extra_info_provider.collate(idx_list, device)
-        idxs = np.array(idx_list)
-        if self.split != Splits.TEST:
-            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            img_labels = pstate_labels = None
-        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
-
-        Timer.get('GetBatch').toc(discard=5)
-        return mb
 
 
 class VCocoSplit(HoiDatasetSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
         super().__init__(split, full_dataset, object_inds, action_inds)
         self.full_dataset = self.full_dataset  # type: VCoco
-        # TODO
-        self.img_pstate_labels = self.full_dataset.split_part_annotations[self.split]
-        self.pc_img_feats = h5py.File(cfg.precomputed_feats_format % ('hico', 'resnet152', split.value), 'r')['img_feats'][:]
+        self.img_dims = self.full_dataset.split_img_dims[self.split]
+        self.fnames = self.full_dataset.split_filenames[self.split]
+
+    def _get_precomputed_feats_fn(self, split):
+        raise ValueError
+        return cfg.precomputed_feats_format % ('hico', 'resnet152', split.value)
 
     @classmethod
-    def instantiate_full_dataset(cls):
+    def instantiate_full_dataset(cls) -> HoiDataset:
         return VCoco()
-
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-        idxs = np.array(idx_list)
-        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
-        if self.split != Splits.TEST:
-            labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            part_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            labels = part_labels = None
-        Timer.get('GetBatch').toc()
-        return feats, labels, part_labels, []
 
 
 class VCoco(HoiDataset):
-    def __init__(self):
+    def __init__(self, add_detection_annotations=None):
+        assert add_detection_annotations is None or add_detection_annotations is True
+
         driver = VCocoDriver()  # type: VCocoDriver
         self._split_det_data = {Splits.TRAIN: self.compute_annotations(split=Splits.TRAIN, driver=driver),
                                 Splits.TEST: self.compute_annotations(split=Splits.TEST, driver=driver),
@@ -68,10 +37,10 @@ class VCoco(HoiDataset):
         self._split_filenames = {Splits.TRAIN: [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['train'].keys()],
                                  Splits.TEST: [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['test'].keys()],
                                  }
-        self._split_img_dims = {Splits.TRAIN: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
+        self.split_img_dims = {Splits.TRAIN: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
                                               for fid in driver.hoi_annotations_per_split['train'].keys()],
                                Splits.TEST: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
-                                             for fid in driver.hoi_annotations_per_split['test'].keys()]}
+                                              for fid in driver.hoi_annotations_per_split['test'].keys()]}
         self._img_dir = driver.img_dir
 
         object_classes = driver.objects
@@ -96,14 +65,12 @@ class VCoco(HoiDataset):
         return self._split_filenames
 
     @property
-    def split_img_dims(self):
-        return self._split_img_dims
+    def split_img_labels(self):
+        raise ValueError('No image labels for V-COCO.')
 
     @property
-    def split_labels(self):
-        return {Splits.TRAIN: self._split_det_data[Splits.TRAIN].labels,
-                Splits.TEST: self._split_det_data[Splits.TEST].labels
-                }
+    def split_hoi_triplets_data(self):
+        return self._split_det_data
 
     def get_img_path(self, split, fname):
         split = fname.split('_')[2]

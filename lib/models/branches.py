@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit, Minibatch
-from lib.dataset.utils import interactions_to_mat
+from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.utils import interactions_to_mat, Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.gcns import BipartiteGCN
 from lib.models.misc import bce_loss, weighted_binary_cross_entropy_with_logits, LIS, MemoryEfficientSwish as Swish
@@ -679,7 +679,7 @@ class FromPartStateLogitsCooccAttBranch(ZSBranch):
         super().__init__(*args, **kwargs)
         hh = self.dataset.full_dataset
         fg_part_states = np.concatenate([inds[:-1] for inds in hh.states_per_part])
-        inters = hh.split_img_labels[self.dataset.split]
+        inters = hh.split_labels[self.dataset.split]
         part_states = hh.split_part_annotations[self.dataset.split]
 
         part_states = part_states[:, fg_part_states]
@@ -746,7 +746,7 @@ class FromPartStateLogitsGCNAttBranch(ZSGCBranch):
         self.S_pos = self.fg_part_states.shape[0]
 
         # Define state-interaction attention matrix based on dataset's co-occurrences
-        inters = hh.split_img_labels[self.dataset.split]
+        inters = hh.split_labels[self.dataset.split]
         part_states = hh.split_part_annotations[self.dataset.split]
         part_states = part_states[:, fg_part_states]
         pstate_inters_cooccs = part_states.T @ inters  # S_pos

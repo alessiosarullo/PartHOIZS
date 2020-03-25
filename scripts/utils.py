@@ -6,7 +6,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 from lib.models.abstract_model import AbstractModel
 
 try:
-    from lib.models.img_models import *
+    from lib.models.models import *
 except ImportError:
     pass
 

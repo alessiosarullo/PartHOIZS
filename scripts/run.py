@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from config import cfg
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
-from lib.dataset.hicodet_hake import HicoDetHakeKPSplit
+from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.utils import Splits
 from lib.eval.evaluator_img import EvaluatorImg
 from lib.eval.part_evaluator_img import PartEvaluatorImg
@@ -96,7 +96,7 @@ class Launcher:
                     pass
 
         if cfg.det:
-            splits = HicoDetHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+            splits = HicoDetHakeSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
         else:
             splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
         self.train_split, self.test_split = splits[Splits.TRAIN], splits[Splits.TEST]

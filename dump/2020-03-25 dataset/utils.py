@@ -1,11 +1,8 @@
 from enum import Enum
-from typing import NamedTuple, List, Union
+from typing import NamedTuple
 
-import h5py
 import numpy as np
 import torch
-
-from config import cfg
 
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane',
@@ -42,59 +39,6 @@ class HoiTripletsData(NamedTuple):
     boxes: np.ndarray  # each is (image_idx, x1, y1, x2, y2, class)
     ho_pairs: np.ndarray  # each is (image_idx, hum_idx, obj_idx)
     labels: np.ndarray  # one-hot encoded
-
-
-class Minibatch(NamedTuple):
-    ex_data: List
-    im_data: List
-    person_data: List
-    obj_data: List
-    ex_labels: Union[None, torch.Tensor]
-    pstate_labels: Union[None, torch.Tensor]
-    other: List
-
-
-class Dims(NamedTuple):
-    N: Union[int, None]  # number of images in the batch (it is defined later)
-    P: Union[int, None]  # number of people
-    M: Union[int, None]  # number of objects
-    K_coco: Union[int, None]  # number of keypoints returned by the keypoint detector
-    K_hake: Union[int, None]  # number of keypoints in HAKE
-    B: Union[int, None]  # number of body part classes
-    S: Union[int, None]  # number of body part states
-    O: Union[int, None]  # number of object classes
-    A: Union[int, None]  # number of action classes
-    C: Union[int, None]  # number of interaction classes
-    F_img: Union[int, None]  # CNN feature vector dimensionality
-    F_kp: Union[int, None]  # keypoint feature vector dimensionality
-    F_obj: Union[int, None]  # object feature vector dimensionality
-    D: Union[int, None]  # dimensionality of interaction pattern
-
-
-class PrecomputedFilesHandler:
-    files = {}
-
-    def __init__(self):
-        super().__init__()
-
-    @classmethod
-    def get_file(cls, file_name):
-        return cls.files.setdefault(file_name, {}).setdefault('_handler', h5py.File(file_name, 'r'))
-
-    @classmethod
-    def get(cls, file_name, attribute_name, load_in_memory=None):
-        if load_in_memory is None:
-            load_in_memory = not cfg.no_load_memory
-        file = cls.get_file(file_name)
-        key = attribute_name
-        if load_in_memory:
-            key += '__loaded'
-        if key not in cls.files[file_name].keys():
-            attribute = file[attribute_name]
-            if load_in_memory:
-                attribute = attribute[:]
-            cls.files[file_name][key] = attribute
-        return cls.files[file_name][key]
 
 
 def get_hico_to_coco_mapping(hico_objects, split_objects=None):

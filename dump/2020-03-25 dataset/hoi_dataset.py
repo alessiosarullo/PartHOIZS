@@ -30,11 +30,11 @@ class HoiDataset:
         raise NotImplementedError
 
     @property
-    def split_img_dims(self):
+    def split_img_labels(self):
         raise NotImplementedError
 
     @property
-    def split_labels(self):
+    def split_hoi_triplets_data(self):
         raise NotImplementedError
 
     @property

@@ -2,44 +2,38 @@ import os
 import pickle
 from typing import Dict
 
-import h5py
 import imagesize
-import numpy as np
-import torch
 from PIL import Image, ImageOps
+import numpy as np
 from scipy.io import loadmat
+import os
 
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.utils import Splits, HoiTripletsData
-from lib.timer import Timer
 
 
 class HicoSplit(HoiDatasetSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
-        super().__init__(split, full_dataset, object_inds, action_inds)
+        super(HicoSplit, self).__init__(split, full_dataset, object_inds, action_inds)
         self.full_dataset = self.full_dataset  # type: Hico
-        self.pc_img_feats = h5py.File(cfg.precomputed_feats_format % ('hico', 'resnet152', split.value), 'r')['img_feats'][:]
+        self.img_dims = self.full_dataset.split_img_dims[self.split]
+        self.fnames = self.full_dataset.split_filenames[self.split]
+
+    def _get_precomputed_feats_fn(self, split):
+        return cfg.precomputed_feats_format % ('hico', 'resnet152', split.value)
 
     @classmethod
     def instantiate_full_dataset(cls) -> HoiDataset:
         return Hico()
 
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-        idxs = np.array(idx_list)
-        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
-        if self.split != Splits.TEST:
-            labels = torch.tensor(self.img_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            labels = None
-        Timer.get('GetBatch').toc()
-        return feats, labels, []
-
 
 class Hico(HoiDataset):
-    def __init__(self, hicodet=False):
+    def __init__(self, add_detection_annotations=None):
+        if add_detection_annotations is None:
+            add_detection_annotations = cfg.det
+
         driver = HicoDriver()  # type: HicoDriver
 
         object_classes = sorted(set([inter['obj'] for inter in driver.interaction_list]))
@@ -60,13 +54,13 @@ class Hico(HoiDataset):
         self._split_filenames = driver.split_filenames
         self._split_labels = annotations_per_split
         self.split_img_dir = driver.split_img_dir
-        self._split_img_dims = driver.split_img_dims  # (w, h)
+        self.split_img_dims = driver.split_img_dims  # (w, h)
 
         # Detection
-        if hicodet:
+        if add_detection_annotations:
             det_driver = HicoDetDriver()
-            self._split_det_data = {Splits.TRAIN: self.compute_annotations(split=Splits.TRAIN, det_driver=det_driver),
-                                    Splits.TEST: self.compute_annotations(split=Splits.TEST, det_driver=det_driver),
+            self._split_det_data = {Splits.TRAIN: self.compute_annotations(split=Splits.TRAIN, det_driver=det_driver, driver=driver),
+                                    Splits.TEST: self.compute_annotations(split=Splits.TEST, det_driver=det_driver, driver=driver),
                                     }  # type: Dict[Splits: HoiTripletsData]
 
     @property
@@ -74,17 +68,17 @@ class Hico(HoiDataset):
         return self._split_filenames
 
     @property
-    def split_img_dims(self):
-        return self._split_img_dims
+    def split_img_labels(self):
+        return self._split_labels
 
     @property
-    def split_labels(self):
-        return self._split_labels
+    def split_hoi_triplets_data(self):
+        return self._split_det_data
 
     def get_img_path(self, split, fname):
         return os.path.join(self.split_img_dir[split], fname)
 
-    def compute_annotations(self, split, det_driver) -> HoiTripletsData:
+    def compute_annotations(self, split, det_driver, driver) -> HoiTripletsData:
         annotations = det_driver.split_annotations[split if split == Splits.TEST else Splits.TRAIN]
 
         # There's a discrepancy between HICO's and HICO-DET's training sets: 38116 files vs 38118. 
@@ -487,5 +481,5 @@ class HicoDetDriver:
 
 
 if __name__ == '__main__':
-    h = Hico(hicodet=True)
+    h = Hico(add_detection_annotations=True)
     print('Done.')
