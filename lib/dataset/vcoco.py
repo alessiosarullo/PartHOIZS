@@ -10,28 +10,7 @@ from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.utils import Splits, HoiTripletsData
 from lib.timer import Timer
 import torch
-
-
-class VCocoKPSplit(HicoHakeSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self.add_extra_info(no_feats=no_feats)
-        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)
-
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-
-        mb = self._extra_info_provider.collate(idx_list, device)
-        idxs = np.array(idx_list)
-        if self.split != Splits.TEST:
-            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            img_labels = pstate_labels = None
-        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
-
-        Timer.get('GetBatch').toc(discard=5)
-        return mb
+import h5py
 
 
 class VCocoSplit(HoiDatasetSplit):
@@ -59,6 +38,28 @@ class VCocoSplit(HoiDatasetSplit):
         return feats, labels, part_labels, []
 
 
+class VCocoKPSplit(VCocoSplit):
+    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
+        super().__init__(split, full_dataset, object_inds, action_inds)
+        self.add_extra_info(no_feats=no_feats)
+        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)
+
+    def _collate(self, idx_list, device):
+        Timer.get('GetBatch').tic()
+
+        mb = self._extra_info_provider.collate(idx_list, device)
+        idxs = np.array(idx_list)
+        if self.split != Splits.TEST:
+            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
+            pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
+        else:
+            img_labels = pstate_labels = None
+        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
+
+        Timer.get('GetBatch').toc(discard=5)
+        return mb
+
+
 class VCoco(HoiDataset):
     def __init__(self):
         driver = VCocoDriver()  # type: VCocoDriver
@@ -69,9 +70,9 @@ class VCoco(HoiDataset):
                                  Splits.TEST: [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['test'].keys()],
                                  }
         self._split_img_dims = {Splits.TRAIN: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
-                                              for fid in driver.hoi_annotations_per_split['train'].keys()],
-                               Splits.TEST: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
-                                             for fid in driver.hoi_annotations_per_split['test'].keys()]}
+                                               for fid in driver.hoi_annotations_per_split['train'].keys()],
+                                Splits.TEST: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
+                                              for fid in driver.hoi_annotations_per_split['test'].keys()]}
         self._img_dir = driver.img_dir
 
         object_classes = driver.objects
