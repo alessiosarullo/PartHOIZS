@@ -17,47 +17,16 @@ class VCocoSplit(HoiDatasetSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
         super().__init__(split, full_dataset, object_inds, action_inds)
         self.full_dataset = self.full_dataset  # type: VCoco
-        # TODO
-        self.img_pstate_labels = self.full_dataset.split_part_annotations[self.split]
-        self.pc_img_feats = h5py.File(cfg.precomputed_feats_format % ('hico', 'resnet152', split.value), 'r')['img_feats'][:]
 
     @classmethod
     def instantiate_full_dataset(cls):
         return VCoco()
 
     def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-        idxs = np.array(idx_list)
-        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
-        if self.split != Splits.TEST:
-            labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            part_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            labels = part_labels = None
-        Timer.get('GetBatch').toc()
-        return feats, labels, part_labels, []
+        raise NotImplementedError
 
 
-class VCocoKPSplit(VCocoSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self.add_extra_info(no_feats=no_feats)
-        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)
 
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-
-        mb = self._extra_info_provider.collate(idx_list, device)
-        idxs = np.array(idx_list)
-        if self.split != Splits.TEST:
-            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            img_labels = pstate_labels = None
-        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
-
-        Timer.get('GetBatch').toc(discard=5)
-        return mb
 
 
 class VCoco(HoiDataset):
@@ -107,8 +76,8 @@ class VCoco(HoiDataset):
                 }
 
     def get_img_path(self, split, fname):
-        split = fname.split('_')[2]
-        assert split in ['train2014', 'val2014', 'test2014']
+        split = fname.split('_')[-2]
+        assert split in ['train2014', 'val2014', 'test2014'], split
         return os.path.join(self._img_dir, split, fname)
 
     @staticmethod

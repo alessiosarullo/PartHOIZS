@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from config import cfg
-from lib.dataset.hoi_dataset_split import HoiExtraFeatProvider
+from lib.dataset.hoi_dataset_split import HoiInstancesFeatProvider
 from lib.dataset.hico_hake import HicoHake, HicoHakeSplit
 from lib.dataset.tin_utils import get_next_sp_with_pose
 from lib.dataset.utils import Splits, HoiData, Minibatch, Dims
@@ -75,8 +75,8 @@ def hoi_gt_assignments(ex, boxes_ext, box_labels, neg_ratio=3, gt_iou_thr=0.5):
 class HicoDetHakeSplit(HicoHakeSplit):
     def __init__(self,split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
         super().__init__(split, full_dataset, object_inds, action_inds)
-        self._extra_info_provider = HoiExtraFeatProvider(ds=self, no_feats=no_feats)
-        # self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._extra_info_provider.non_empty_imgs)  # TODO
+        self._feat_provider = HoiInstancesFeatProvider(ds=self, no_feats=no_feats)
+        # self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._feat_provider.non_empty_imgs)  # TODO
 
     def _get_labels(self):
         return self.full_dataset._split_det_data[self.split].labels
@@ -87,13 +87,13 @@ class HicoDetHakeSplit(HicoHakeSplit):
 
     @property
     def dims(self) -> Dims:
-        F_kp, F_obj = self._extra_info_provider.kp_net_dim, self._extra_info_provider.obj_feats_dim
+        F_kp, F_obj = self._feat_provider.kp_net_dim, self._feat_provider.obj_feats_dim
         return super().dims._replace(P=1, M=1, F_kp=F_kp, F_obj=F_obj)  # each example is an interaction, so 1 person and 1 object
 
     def hold_out(self, ratio):
         if not cfg.no_filter_bg_only:
             print('!!!!!!!!!! Not filtering background-only images.')
-        num_examples = len(self._extra_info_provider.hoi_data_cache)
+        num_examples = len(self._feat_provider.hoi_data_cache)
         example_ids = np.arange(num_examples)
         num_examples_to_keep = num_examples - int(num_examples * ratio)
         keep_inds = np.random.choice(example_ids, size=num_examples_to_keep, replace=False)
@@ -131,14 +131,14 @@ class HicoDetHakeSplit(HicoHakeSplit):
     #     return data_loader
 
     def __len__(self):
-        return len(self._extra_info_provider.hoi_data_cache)
+        return len(self._feat_provider.hoi_data_cache)
 
     def _collate(self, idx_list, device):  # FIXME
         Timer.get('GetBatch').tic()
 
         idxs = np.array(idx_list)
-        im_idxs = self._extra_info_provider.hoi_data_cache_np[idxs, 0]
-        mb = self._extra_info_provider.collate(idx_list, device)
+        im_idxs = self._feat_provider.hoi_data_cache_np[idxs, 0]
+        mb = self._feat_provider.collate(idx_list, device)
         if self.split != Splits.TEST:
             img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
             pstate_labels = torch.tensor(self.img_pstate_labels[im_idxs, :], dtype=torch.float32, device=device)

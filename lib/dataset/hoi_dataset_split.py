@@ -70,7 +70,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
             self.labels[:, self.seen_interactions] = all_labels[:, self.seen_interactions]
         self.non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
 
-        self._extra_info_provider = None  # type: Union[None, ImgExtraFeatProvider]
+        self._feat_provider = None  # type: Union[None, FeatProvider]
 
     def _get_labels(self):
         return self.full_dataset.split_labels[self.split]
@@ -86,6 +86,11 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         keep_inds = np.random.choice(image_ids, size=num_keep_imgs, replace=False)
         self.keep_inds = keep_inds
         self.holdout_inds = np.setdiff1d(image_ids, keep_inds)
+
+    def get_img(self, img_id):
+        img_fn = self.full_dataset.get_img_path(self.split, self.full_dataset.split_filenames[self.split][img_id])
+        img = Image.open(img_fn).convert('RGB')
+        return img
 
     @property
     def num_objects(self):
@@ -146,11 +151,6 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         )
         return data_loader
 
-    def get_img(self, img_id):
-        img_fn = self.full_dataset.get_img_path(self.split, self.full_dataset.split_filenames[self.split][img_id])
-        img = Image.open(img_fn).convert('RGB')
-        return img
-
     def __getitem__(self, idx):
         # This should only be used by the data loader (see above).
         return idx
@@ -184,7 +184,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         return splits
 
 
-class ExtraFeatProvider:
+class FeatProvider:
     def __init__(self, ds: HoiDatasetSplit, no_feats=False):
         super().__init__()
         self.wrapped_ds = ds
@@ -302,7 +302,7 @@ class ExtraFeatProvider:
         raise NotImplementedError
 
 
-class ImgExtraFeatProvider(ExtraFeatProvider):
+class ImgInstancesFeatProvider(FeatProvider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -402,7 +402,7 @@ class ImgExtraFeatProvider(ExtraFeatProvider):
         return mb
 
 
-class HoiExtraFeatProvider(ExtraFeatProvider):
+class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.hoi_data_cache = self._compute_hoi_data()  # type: List[HoiData]

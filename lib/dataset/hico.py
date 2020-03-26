@@ -2,10 +2,8 @@ import os
 import pickle
 from typing import Dict
 
-import h5py
 import imagesize
 import numpy as np
-import torch
 from PIL import Image, ImageOps
 from scipy.io import loadmat
 
@@ -13,29 +11,19 @@ from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.utils import Splits, HoiTripletsData
-from lib.timer import Timer
 
 
 class HicoSplit(HoiDatasetSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
         super().__init__(split, full_dataset, object_inds, action_inds)
         self.full_dataset = self.full_dataset  # type: Hico
-        self.pc_img_feats = h5py.File(cfg.precomputed_feats_format % ('hico', 'resnet152', split.value), 'r')['img_feats'][:]
 
     @classmethod
     def instantiate_full_dataset(cls) -> HoiDataset:
         return Hico()
 
     def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-        idxs = np.array(idx_list)
-        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
-        if self.split != Splits.TEST:
-            labels = torch.tensor(self.img_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            labels = None
-        Timer.get('GetBatch').toc()
-        return feats, labels, []
+        raise NotImplementedError
 
 
 class Hico(HoiDataset):
