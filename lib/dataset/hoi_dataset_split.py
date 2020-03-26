@@ -419,7 +419,7 @@ class HoiExtraFeatProvider(ExtraFeatProvider):
         im_idx_to_ho_pairs_inds = {k: np.array(v) for k, v in im_idx_to_ho_pairs_inds.items()}
 
         all_hoi_data = []
-        for im_idx, imdata in enumerate(self._extra_info_provider.img_data_cache):
+        for im_idx, imdata in enumerate(self.img_data_cache):
             if 'person_inds' in imdata and 'obj_inds' in imdata:
                 ho_pairs_inds = im_idx_to_ho_pairs_inds[im_idx]
                 gt_ho_pairs = det_data.ho_pairs[ho_pairs_inds, 1:]

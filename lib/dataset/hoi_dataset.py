@@ -18,7 +18,7 @@ class HoiDataset:
 
         # Interactions
         if interactions is not None:
-            self.interactions = interactions
+            self.interactions = interactions.astype(np.int)
         else:
             assert interactions_classes is not None
             self.interactions = np.array([[self.action_index[act], self.object_index[obj]] for act, obj in interactions_classes])  # [a, o]

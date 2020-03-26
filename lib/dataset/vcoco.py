@@ -81,14 +81,14 @@ class VCoco(HoiDataset):
         interactions = []
         for k, v in self._split_det_data.items():
             hoi_inds, acts = np.where(v.labels)
-            obj_inds = v.ho_pairs[hoi_inds, 2]
+            obj_inds = v.ho_pairs[hoi_inds, 2].astype(np.int)
             actual_interactions_mask = (obj_inds >= 0)
             acts = acts[actual_interactions_mask]
             obj_inds = obj_inds[actual_interactions_mask]
             assert np.all(obj_inds >= 0)
-            objs = v.boxes[obj_inds]
+            objs = v.boxes[obj_inds, -1]
             interactions.append(np.stack([acts, objs], axis=1))
-        interactions = np.unique(np.concatenate(interactions, axis=0))
+        interactions = np.unique(np.concatenate(interactions, axis=0), axis=0)
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
 
@@ -131,27 +131,34 @@ class VCoco(HoiDataset):
                             obj_ann['obj']
                             ]
 
-        ho_pairs = np.zeros((len(hoi_annotations), 3))  # each is (image_idx, hum_idx, obj_idx)
-        labels = np.zeros((len(hoi_annotations), len(driver.actions)))  # FIXME actions, not interactions
-        for i, (imid, ann) in enumerate(hoi_annotations.items()):
-            act_id = ann['action']
-            num_roles = len(driver.interaction_class_data[act_id]['role_name'])
-            if num_roles == 1:
-                obj_idx = np.nan
-            elif num_roles == 2:
-                obj_idx = obj_id_to_idx[ann['role_object_id'][0]]
-            elif num_roles == 3:
-                # TODO? Handle  {'action_name': 'cut', 'role_name': ['agent', 'instr', 'obj']}, making it cut_with? What about similar actions?
-                role_id = driver.interaction_class_data[act_id]['role_name'].index('obj') - 1
-                obj_idx = obj_id_to_idx[ann['role_object_id'][role_id]]
-            else:
-                raise ValueError(f'Too many roles: {num_roles}')
-            ho_pairs[i] = [img_id_to_idx[imid],
-                           obj_id_to_idx[ann['ann_id']],
-                           obj_idx
-                           ]
-            labels[i, act_id] = 1
-        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=labels)
+        ho_pairs = []  # each is (image_idx, hum_idx, obj_idx)
+        labels = []  # FIXME actions, not interactions
+        for i, (imid, im_annotations) in enumerate(hoi_annotations.items()):
+            for ann in im_annotations:
+                act_id = ann['action']
+                num_roles = len(driver.interaction_class_data[act_id]['role_name'])
+                if num_roles == 1:
+                    obj_id = -1
+                elif num_roles == 2:
+                    obj_id = ann['role_object_id'][0]
+                elif num_roles == 3:
+                    # TODO? Handle  {'action_name': 'cut', 'role_name': ['agent', 'instr', 'obj']}, making it cut_with? What about similar actions?
+                    role_id = driver.interaction_class_data[act_id]['role_name'].index('obj') - 1
+                    obj_id = ann['role_object_id'][role_id]
+                else:
+                    raise ValueError(f'Too many roles: {num_roles}.')
+                obj_idx = obj_id_to_idx.get(obj_id, np.nan)
+                ho_pairs.append(np.array([img_id_to_idx[imid],
+                                          obj_id_to_idx[ann['ann_id']],
+                                          obj_idx
+                                          ]))
+                labels.append(act_id)
+        ho_pairs = np.stack(ho_pairs, axis=0)
+        # TODO? These pairs are not unique
+        labels = np.array(labels)
+        onehot_labels = np.zeros((labels.size, len(driver.actions)))
+        onehot_labels[np.arange(labels.size), labels] = 1
+        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=onehot_labels)
 
 
 class VCocoDriver:
@@ -193,7 +200,7 @@ class VCocoDriver:
         with open(os.path.join(self.data_dir, 'vcoco', 'vcoco_test.json'), 'r') as f:
             all_hoi_data['test'] = json.load(f)
 
-        action_class_data = []
+        interaction_class_data = []
         num_categories = len(all_hoi_data['train'])
         assert num_categories == len(all_hoi_data['val']) == len(all_hoi_data['test'])
         for i in range(num_categories):
@@ -201,14 +208,15 @@ class VCocoDriver:
             for k in ['action_name', 'role_name', 'include']:
                 assert all_hoi_data['train'][i][k] == all_hoi_data['val'][i][k] == all_hoi_data['test'][i][k]
                 class_data[k] = all_hoi_data['train'][i][k]
-            action_class_data.append(class_data)
-        actions = [x['action_name'] for x in action_class_data]
+            interaction_class_data.append(class_data)
+        interaction_class_data = [{'action_name': self.null_interaction, 'role_name': ['agent'], 'include': [[]]}] + interaction_class_data
+        actions = [x['action_name'] for x in interaction_class_data]
 
         hoi_annotations = {'train': {}, 'test': {}}  # collapse val in train
         for split in ['train', 'val', 'test']:
             split_data = {}
             for i in range(num_categories):
-                num_roles = len(action_class_data[i]['role_name'])
+                num_roles = len(interaction_class_data[i + 1]['role_name'])
 
                 im_ids = all_hoi_data[split][i]['image_id']
                 ann_ids = all_hoi_data[split][i]['ann_id']
@@ -228,16 +236,16 @@ class VCocoDriver:
                         split_data.setdefault(im_id_j, []).append({'ann_id': ann_id_j,
                                                                    'role_object_id': roles_j,
                                                                    # 'label': label_j,
-                                                                   'action': i,
+                                                                   'action': i + 1,
                                                                    })
             hsplit = 'test' if split == 'test' else 'train'
             assert not set(hoi_annotations[hsplit].keys()) & set(split_data.keys())
             hoi_annotations[hsplit].update(split_data)
         hoi_annotations = {k: {k1: v[k1] for k1 in sorted(v.keys())} for k, v in hoi_annotations.items()}
 
-        return image_infos, [object_annotations, objects], [hoi_annotations, actions], [object_class_data, action_class_data, all_hoi_data]
+        return image_infos, [object_annotations, objects], [hoi_annotations, actions], [object_class_data, interaction_class_data, all_hoi_data]
 
 
 if __name__ == '__main__':
-    h = VCocoDriver()
+    h = VCoco()
     print('Done.')
