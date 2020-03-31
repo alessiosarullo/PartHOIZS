@@ -6,6 +6,8 @@ import numpy as np
 import torch
 
 from config import cfg
+from lib.bbox_utils import compute_ious
+
 
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane',
@@ -35,13 +37,13 @@ class HoiData(NamedTuple):
     fname_id: int
     p_idx: int
     o_idx: int
-    hoi_classes: np.ndarray
 
 
 class HoiTripletsData(NamedTuple):
     boxes: np.ndarray  # each is (image_idx, x1, y1, x2, y2, class)
     ho_pairs: np.ndarray  # each is (image_idx, hum_idx, obj_idx)
     labels: np.ndarray  # one-hot encoded
+    fnames: List[str]  # for each human-object pair
 
 
 class Minibatch(NamedTuple):

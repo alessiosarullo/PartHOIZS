@@ -23,10 +23,14 @@ def main():
             split_dir = os.path.join(dst_folder, split)
             os.makedirs(split_dir, exist_ok=True)
 
-            img_path = os.path.join(img_folder, fn)
-            if not os.path.isfile(img_path):
-                raise ValueError(f'File {img_path} does not exist.')
-            os.symlink(img_path, os.path.join(split_dir, fn))
+            for img_path in [os.path.join(img_folder, fn),
+                             os.path.join(img_folder, split, fn)
+                             ]:
+                if os.path.isfile(img_path):
+                    os.symlink(img_path, os.path.join(split_dir, fn))
+                    break
+            else:
+                raise ValueError(f'File {fn} does not exist in {img_folder} or subfolders.')
 
 
 if __name__ == '__main__':

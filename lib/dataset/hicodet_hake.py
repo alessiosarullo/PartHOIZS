@@ -1,81 +1,19 @@
-from typing import List
-
 import numpy as np
 import torch
+import torch.utils.data
 
 from config import cfg
-from lib.dataset.hoi_dataset_split import HoiInstancesFeatProvider
 from lib.dataset.hico_hake import HicoHake, HicoHakeSplit
-from lib.dataset.tin_utils import get_next_sp_with_pose
-from lib.dataset.utils import Splits, HoiData, Minibatch, Dims
+from lib.dataset.hoi_dataset_split import HoiInstancesFeatProvider
+from lib.dataset.utils import Splits, Dims, get_hico_to_coco_mapping
 from lib.timer import Timer
-import torch.utils.data
-from lib.bbox_utils import compute_ious
-
-
-def hoi_gt_assignments(ex, boxes_ext, box_labels, neg_ratio=3, gt_iou_thr=0.5):
-    raise NotImplementedError  # TODO
-
-    gt_box_classes = ex.gt_obj_classes
-    gt_resc_boxes = ex.gt_boxes * ex.scale
-    gt_interactions = ex.gt_hois
-    predict_boxes = boxes_ext[:, 1:5]
-    predict_box_labels = box_labels
-
-    num_predict_boxes = predict_boxes.shape[0]
-
-    # Find rel distribution
-    iou_predict_to_gt_i = compute_ious(predict_boxes, gt_resc_boxes)
-    predict_gt_match_i = (predict_box_labels[:, None] == gt_box_classes[None, :]) & (iou_predict_to_gt_i >= gt_iou_thr)
-
-    action_labels_i = np.zeros((num_predict_boxes, num_predict_boxes, self.dataset.num_actions))
-    for head_gt_ind, rel_id, tail_gt_ind in gt_interactions:
-        for head_predict_ind in np.flatnonzero(predict_gt_match_i[:, head_gt_ind]):
-            for tail_predict_ind in np.flatnonzero(predict_gt_match_i[:, tail_gt_ind]):
-                if head_predict_ind != tail_predict_ind:
-                    action_labels_i[head_predict_ind, tail_predict_ind, rel_id] = 1.0
-
-    if cfg.null_as_bg:  # treat null action as negative/background
-        ho_fg_mask = action_labels_i[:, :, 1:].any(axis=2)
-        assert not np.any(action_labels_i[:, :, 0].astype(bool) & ho_fg_mask)  # it's either foreground or background
-        ho_bg_mask = ~ho_fg_mask
-        action_labels_i[:, :, 0] = ho_bg_mask.astype(np.float)
-    else:  # null action is separate from background
-        ho_fg_mask = action_labels_i.any(axis=2)
-        ho_bg_mask = ~ho_fg_mask
-
-    # Filter irrelevant BG relationships (i.e., those where the subject is not human or self-relations).
-    non_human_box_inds_i = (predict_box_labels != self.dataset.human_class)
-    ho_bg_mask[non_human_box_inds_i, :] = 0
-    ho_bg_mask[np.arange(num_predict_boxes), np.arange(num_predict_boxes)] = 0
-
-    ho_fg_pairs_i = np.stack(np.where(ho_fg_mask), axis=1)
-    ho_bg_pairs_i = np.stack(np.where(ho_bg_mask), axis=1)
-    num_bg_to_sample = max(ho_fg_pairs_i.shape[0], 1) * neg_ratio
-    bg_inds = np.random.permutation(ho_bg_pairs_i.shape[0])[:num_bg_to_sample]
-    ho_bg_pairs_i = ho_bg_pairs_i[bg_inds, :]
-
-    ho_pairs_i = np.concatenate([ho_fg_pairs_i, ho_bg_pairs_i], axis=0)
-    ho_infos_i = np.stack([np.full(ho_pairs_i.shape[0], fill_value=0),
-                           ho_pairs_i[:, 0],
-                           ho_pairs_i[:, 1]], axis=1)
-    if ho_infos_i.shape[0] == 0:  # since GT boxes are added to predicted ones during training this cannot be empty
-        print(gt_resc_boxes)
-        print(predict_boxes)
-        print(gt_box_classes)
-        print(predict_box_labels)
-        raise RuntimeError
-
-    ho_infos_and_action_labels = np.concatenate([ho_infos_i, action_labels_i[ho_pairs_i[:, 0], ho_pairs_i[:, 1]]], axis=1)
-    ho_infos = ho_infos_and_action_labels[:, :3].astype(np.int, copy=False)  # [im_id, sub_ind, obj_ind]
-    action_labels = ho_infos_and_action_labels[:, 3:].astype(np.float32, copy=False)  # [pred]
-    return ho_infos, action_labels
 
 
 class HicoDetHakeSplit(HicoHakeSplit):
-    def __init__(self,split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
+    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
         super().__init__(split, full_dataset, object_inds, action_inds)
-        self._feat_provider = HoiInstancesFeatProvider(ds=self, no_feats=no_feats)
+        self._feat_provider = HoiInstancesFeatProvider(ds=self, ds_name='hico', no_feats=no_feats,
+                                                       obj_mapping=get_hico_to_coco_mapping(self.full_dataset.objects))
         # self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._feat_provider.non_empty_imgs)  # TODO
 
     def _get_labels(self):

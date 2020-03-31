@@ -1,5 +1,7 @@
 from typing import List, Dict, Union
 
+import os
+
 import numpy as np
 import torch
 from PIL import Image
@@ -43,7 +45,7 @@ class AbstractHoiDatasetSplit(Dataset):
 
 
 class HoiDatasetSplit(AbstractHoiDatasetSplit):
-    def __init__(self, split, full_dataset: HoiDataset, object_inds=None, action_inds=None):
+    def __init__(self, split, full_dataset: HoiDataset, object_inds=None, action_inds=None, labels_are_actions=False):
         super().__init__(split)
         self.full_dataset = full_dataset  # type: HoiDataset
         self.img_dims = self.full_dataset.split_img_dims[self.split]
@@ -64,10 +66,15 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
 
         self.labels = self._get_labels()
-        if self.seen_interactions.size < self.full_dataset.num_interactions:
+        if labels_are_actions:
+            seen, num_all = self.seen_actions, self.full_dataset.num_actions
+        else:  # labels are interactions
+            seen, num_all = self.seen_interactions, self.full_dataset.num_interactions
+        assert self.labels.shape[1] == num_all
+        if seen.size < num_all:
             all_labels = self.labels
             self.labels = np.zeros_like(all_labels)
-            self.labels[:, self.seen_interactions] = all_labels[:, self.seen_interactions]
+            self.labels[:, seen] = all_labels[:, seen]
         self.non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
 
         self._feat_provider = None  # type: Union[None, FeatProvider]
@@ -185,13 +192,11 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
 
 class FeatProvider:
-    def __init__(self, ds: HoiDatasetSplit, no_feats=False):
+    def __init__(self, ds: HoiDatasetSplit, ds_name, no_feats=False, obj_mapping=None):
         super().__init__()
         self.wrapped_ds = ds
         self.full_dataset = self.wrapped_ds.full_dataset
         self.split = self.wrapped_ds.split
-
-        hico_to_coco_mapping = get_hico_to_coco_mapping(self.full_dataset.objects)
 
         #############################################################################################################################
         # Load precomputed data
@@ -199,16 +204,20 @@ class FeatProvider:
         #####################################################
         # Image
         #####################################################
-        img_fn = cfg.precomputed_feats_format % ('hico', 'resnet152', self.split.value)
+        img_fn = cfg.precomputed_feats_format % (f'{ds_name}', 'resnet152', self.split.value)
         self.pc_img_feats = PrecomputedFilesHandler.get(img_fn, 'img_feats', load_in_memory=True)
 
         #####################################################
         # Objects
         #####################################################
-        self.objects_fn = cfg.precomputed_feats_format % ('hicoobjs', 'mask_rcnn_X_101_32x8d_FPN_3x',
-                                                          f'{self.split.value}{"__nofeats" if no_feats else ""}')
+        self.objects_fn = cfg.precomputed_feats_format % (f'{ds_name}objs', 'mask_rcnn_X_101_32x8d_FPN_3x', f'{self.split.value}')
+        if not os.path.isfile(self.objects_fn) and no_feats:
+            self.objects_fn = cfg.precomputed_feats_format % (f'{ds_name}objs', 'mask_rcnn_X_101_32x8d_FPN_3x',
+                                                              f'{self.split.value}{"__nofeats" if no_feats else ""}')
         self.obj_boxes = PrecomputedFilesHandler.get(self.objects_fn, 'boxes', load_in_memory=True)
-        self.obj_scores = PrecomputedFilesHandler.get(self.objects_fn, 'box_scores', load_in_memory=True)[:, hico_to_coco_mapping]
+        self.obj_scores = PrecomputedFilesHandler.get(self.objects_fn, 'box_scores', load_in_memory=True)
+        if obj_mapping is not None:
+            self.obj_scores = self.obj_scores[:, obj_mapping]
         if not no_feats:
             self.obj_feats = PrecomputedFilesHandler.get(self.objects_fn, 'box_feats')
             self.obj_feats_dim = self.obj_feats.shape[-1]
@@ -218,8 +227,10 @@ class FeatProvider:
         #####################################################
         # People
         #####################################################
-        self.keypoints_fn = cfg.precomputed_feats_format % \
-                            ('hicokps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}{"__nofeats" if no_feats else ""}')
+        self.keypoints_fn = cfg.precomputed_feats_format % (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}')
+        if not os.path.isfile(self.keypoints_fn) and no_feats:
+            self.keypoints_fn = cfg.precomputed_feats_format % \
+                                (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}{"__nofeats" if no_feats else ""}')
         self.person_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'boxes', load_in_memory=True)
         self.coco_kps = PrecomputedFilesHandler.get(self.keypoints_fn, 'keypoints', load_in_memory=True)
         self.person_scores = PrecomputedFilesHandler.get(self.keypoints_fn, 'scores', load_in_memory=True)
@@ -406,32 +417,21 @@ class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.hoi_data_cache = self._compute_hoi_data()  # type: List[HoiData]
-        self.hoi_data_cache_np = np.stack([np.concatenate([x[:-1], x[-1]]) for x in self.hoi_data_cache])  # type: np.ndarray[np.int]
+        self.hoi_data_cache_np = np.stack(self.hoi_data_cache, axis=0)  # type: np.ndarray[np.int]
 
     def _compute_hoi_data(self):
         """
         Fields: 'fname_id', 'person_idx', 'obj_idx', 'hoi_class'
         """
-        det_data = self.full_dataset._split_det_data[self.split]
-        im_idx_to_ho_pairs_inds = {}
-        for i, (image_idx, hum_idx, obj_idx) in enumerate(det_data.ho_pairs):
-            im_idx_to_ho_pairs_inds.setdefault(image_idx, []).append(i)
-        im_idx_to_ho_pairs_inds = {k: np.array(v) for k, v in im_idx_to_ho_pairs_inds.items()}
-
         all_hoi_data = []
         for im_idx, imdata in enumerate(self.img_data_cache):
             if 'person_inds' in imdata and 'obj_inds' in imdata:
-                ho_pairs_inds = im_idx_to_ho_pairs_inds[im_idx]
-                gt_ho_pairs = det_data.ho_pairs[ho_pairs_inds, 1:]
-                gt_hoi_labels = det_data.labels[ho_pairs_inds, :]
-                # TODO
                 for p in imdata.get('person_inds', []):
                     for o in imdata.get('obj_inds', []):
                         hoi_data = HoiData(im_idx=im_idx,
                                            fname_id=imdata['fname_id'],
                                            p_idx=p,
                                            o_idx=o,
-                                           hoi_classes=None,  # FIXME
                                            )
                         all_hoi_data.append(hoi_data)
         return all_hoi_data

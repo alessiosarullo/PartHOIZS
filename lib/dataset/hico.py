@@ -82,6 +82,7 @@ class Hico(HoiDataset):
         boxes = []  # each is (image_idx, x1, y1, x2, y2, class)
         ho_pairs = []  # each is (image_idx, hum_idx, obj_idx)
         labels = []
+        fnames = []
         curr_num_boxes = 0
         for i, img_ann in enumerate(annotations):
             for inter in img_ann['interactions']:
@@ -118,11 +119,12 @@ class Hico(HoiDataset):
                     im_labels_onehot = np.zeros((I, self.num_interactions))
                     im_labels_onehot[np.arange(I), inter_id] = 1
                     labels.append(im_labels_onehot)
+                    fnames.append(img_ann['file'])
 
         boxes = np.concatenate(boxes, axis=0)
         ho_pairs = np.concatenate(ho_pairs, axis=0)
         labels = np.concatenate(labels, axis=0)
-        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=labels)
+        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=labels, fnames=fnames)
 
 
 class HicoDriver:

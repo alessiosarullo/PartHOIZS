@@ -203,8 +203,9 @@ class Visualizer:
             *,
             boxes,
             labels=None,
-            assigned_colors=None,
-            alpha=0.5
+            color=None,
+            alpha=0.5,
+            **kwargs
     ) -> VisImage:
         """
         Args:
@@ -227,15 +228,17 @@ class Visualizer:
         # Display in largest to smallest order to reduce occlusion.
         boxes, labels = self.sort_by_area(boxes, labels)
 
-        if assigned_colors is None:
+        if color is None:
             cmap = colormap(rgb=True, maximum=1)
             assigned_colors = [cmap[i % len(cmap)] for i in range(num_instances)]
+        else:
+            assigned_colors = [color] * num_instances
 
         for i in range(num_instances):
             color = assigned_colors[i]
             if boxes is not None:
                 # noinspection PyTypeChecker
-                self.draw_box(boxes[i], edge_color=color, alpha=alpha)
+                self.draw_box(boxes[i], edge_color=color, alpha=alpha, **kwargs)
 
             if labels is not None:
                 # first get a box

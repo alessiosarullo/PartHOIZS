@@ -8,7 +8,7 @@ import torch
 from config import cfg
 from lib.dataset.hico import Hico
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, ImgInstancesFeatProvider
-from lib.dataset.utils import Splits, Dims
+from lib.dataset.utils import Splits, Dims, get_hico_to_coco_mapping
 from lib.timer import Timer
 
 
@@ -35,7 +35,8 @@ class HicoHakeSplit(HoiDatasetSplit):
 class HicoHakeKPSplit(HicoHakeSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
         super().__init__(split, full_dataset, object_inds, action_inds)
-        self._feat_provider = ImgInstancesFeatProvider(ds=self, no_feats=no_feats)
+        self._feat_provider = ImgInstancesFeatProvider(ds=self, ds_name='hico', no_feats=no_feats,
+                                                       obj_mapping=get_hico_to_coco_mapping(self.full_dataset.objects))
         self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._feat_provider.non_empty_imgs)
 
     @property
@@ -121,7 +122,3 @@ class HicoHake(Hico):
     @property
     def num_part_states(self):
         return len(self.bp_ps_pairs)
-
-
-if __name__ == '__main__':
-    HicoHake()
