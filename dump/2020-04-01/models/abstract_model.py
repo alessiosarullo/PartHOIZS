@@ -27,6 +27,7 @@ class Prediction:
         self.part_state_scores = None  # type: Union[None, np.ndarray]
         self.hoi_scores = None  # type: Union[None, np.ndarray]
         self.obj_scores = None  # type: Union[None, np.ndarray]
+        self.seen_scores = None  # type: Union[None, np.ndarray]
 
         if prediction_dict is not None:
             # try:

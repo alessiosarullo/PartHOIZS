@@ -30,6 +30,7 @@ class Configs:
         self.resume = False
         self.save_dir = ''
         self.seenf = -1
+        self.det = False
 
         ##########################################
         # Data options                           #
@@ -40,11 +41,10 @@ class Configs:
 
         # Image
         self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
-        self.max_ppl = 0
-        self.max_obj = 0
+        self.max_ppl = 3
+        self.max_obj = 3
 
         # Dataset
-        self.ds = 'vcoco'
         self.val_ratio = 0.1
 
         ##########################################
@@ -58,6 +58,7 @@ class Configs:
         self.hoi_repr_dim = 256
         self.swish = False
         self.wrap = False
+        self.seen_pred = False
 
         # General
         self.act = False
@@ -87,12 +88,15 @@ class Configs:
         self.tin = False
         self.ipsize = 32  # size of the interactiveness pattern feature map
         self.tin_dropout = 0.8
+        self.cache_tin = False
 
         # ZS specific
         self.merge_dir = False
+        self.trihead = False
 
         # ZS GCN specific
         self.gcswish = False
+        self.apgcn_link_null = False
         self.gcldim = 1024
         self.gcrdim = 1024
         self.gcdropout = 0.5
@@ -100,11 +104,17 @@ class Configs:
         # GAT specific
         self.gat = False
         self.gat_heads = 4
+        self.nocspos = False
+        self.gat_instance = False
 
         # Part
         self.pbf = ''  # part branch save file (load pre-trained part branch from here)
         self.no_part = False
+        self.part_only = False
+        self.part_bg_diff = False
+        self.no_kp = False
         self.sbmar = 0.0  # small boxes min area ratio
+        self.use_sk = False  # skeleton
         self.part_repr_dim = 256
 
         ##########################################

@@ -11,15 +11,15 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit
-
-from lib.dataset.vcoco import VCocoKPSplit
+from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
+from lib.dataset.utils import Splits
 from lib.eval.evaluator_img import EvaluatorImg
 from lib.eval.part_evaluator_img import PartEvaluatorImg
+from lib.eval.seen_evaluator_img import SeenEvaluatorImg
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.radam import RAdam
-from lib.timer import Timer
 from scripts.running_stats import RunningStats
+from lib.timer import Timer
 from scripts.utils import print_params, get_all_models_by_name
 
 
@@ -90,17 +90,15 @@ class Launcher:
             inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
             for k in ['obj', 'act', 'hoi']:
                 try:
-                    inds[k] = sorted(inds_dict['train'][k].tolist())
+                    inds[k] = sorted(inds_dict[Splits.TRAIN.value][k].tolist())
                 except KeyError:
                     pass
 
-        if cfg.ds == 'hh':
-            splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
-        elif cfg.ds == 'vcoco':
-            splits = VCocoKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+        if cfg.det:
+            splits = HicoDetHakeSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
         else:
-            raise ValueError('Unknown dataset.')
-        self.train_split, self.test_split = splits['train'], splits['test']
+            splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+        self.train_split, self.test_split = splits[Splits.TRAIN], splits[Splits.TEST]
 
         # Model
         self.detector = get_all_models_by_name()[cfg.model](self.train_split)  # type: AbstractModel
@@ -161,11 +159,11 @@ class Launcher:
         val_loader = self.train_split.get_loader(batch_size=cfg.batch_size, holdout_set=True)
         test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
 
-        training_stats = RunningStats(split='train', num_batches=len(train_loader),
+        training_stats = RunningStats(split=Splits.TRAIN, num_batches=len(train_loader),
                                       batch_size=train_loader.batch_size or train_loader.batch_sampler.batch_size)
-        val_stats = RunningStats(split='val', num_batches=len(val_loader),
+        val_stats = RunningStats(split=Splits.VAL, num_batches=len(val_loader),
                                  batch_size=val_loader.batch_size or val_loader.batch_sampler.batch_size, history_window=len(val_loader))
-        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=cfg.batch_size, history_window=len(self.test_split))
+        test_stats = RunningStats(split=Splits.TEST, num_batches=len(test_loader), batch_size=cfg.batch_size, history_window=len(self.test_split))
 
         try:
             cfg.save()
@@ -317,16 +315,8 @@ class Launcher:
                 with open(cfg.watched_values_file, 'wb') as f:
                     pickle.dump(watched_values, f)
 
-        do_part_eval = do_hoi_eval = True
-        for p in all_predictions:
-            pr = Prediction(p)
-            do_part_eval = do_part_eval and pr.part_state_scores is not None
-            do_hoi_eval = do_hoi_eval and pr.hoi_scores is not None
-            if not do_part_eval and not do_hoi_eval:
-                break
-
         metric_dict = {}
-        if do_part_eval:
+        if not cfg.no_part:
             print('Part states:')
             part_evaluator = PartEvaluatorImg(data_loader.dataset)
             part_evaluator.evaluate_predictions(all_predictions)
@@ -334,13 +324,24 @@ class Launcher:
             part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
             metric_dict.update(part_metric_dict)
 
-            null_interactions = np.flatnonzero([states[-1] for states in self.test_split.full_dataset.states_per_part]).tolist()
+            hh = self.test_split.full_dataset  # type: HicoHake
+            null_interactions = np.flatnonzero([states[-1] for states in hh.states_per_part]).tolist()
             part_interactiveness_metric_dict = part_evaluator.output_metrics(interactions_to_keep=null_interactions, compute_pos=False)
             part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
             assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
             metric_dict.update(part_interactiveness_metric_dict)
 
-        if do_hoi_eval:
+        if cfg.seen_pred:
+            print('Seen or unseen HOIs:')
+            seen_evaluator = SeenEvaluatorImg(data_loader.dataset)
+            seen_evaluator.evaluate_predictions(all_predictions)
+            seen_evaluator.save(cfg.eval_res_file_format % 'seen')
+            seen_metric_dict = {f'Seen_{k}': v for k, v in seen_evaluator.output_metrics().items()}
+            metric_dict.update(seen_metric_dict)
+
+        if cfg.part_only:
+            assert not cfg.no_part
+        else:
             test_interactions = None
 
             print('Interactions (all):')
@@ -406,7 +407,7 @@ class Launcher:
 
     def evaluate(self):
         test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
-        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=1, history_window=len(self.test_split),
+        test_stats = RunningStats(split=Splits.TEST, num_batches=len(test_loader), batch_size=1, history_window=len(self.test_split),
                                   tboard_log=False)
         all_predictions = self.eval_epoch(None, test_loader, test_stats)
         return all_predictions

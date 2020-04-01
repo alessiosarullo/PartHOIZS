@@ -8,7 +8,9 @@ import matplotlib
 try:
     matplotlib.use('Qt5Agg')
     sys.argv[1:] = ['vis',
-                    '--gt', '--pbb', '--obb',
+                    '--gt',
+                    '--pbb',
+                    # '--obb',
                     '--num_imgs', '-1',
                     '--vis',
                     '--max_ppl', '0', '--max_obj', '0']
@@ -23,7 +25,7 @@ from matplotlib import pyplot as plt
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub
 from lib.dataset.vcoco import VCoco, VCocoKPSplit
-from lib.dataset.utils import Splits
+
 from lib.dataset.tin_utils import get_next_sp_with_pose
 from config import cfg
 
@@ -51,7 +53,7 @@ def get_args():
 
 def vis_vcoco():
     args = get_args()
-    split = Splits[args.split.upper()]
+    split = args.split
 
     folder = []
     if args.part:
@@ -88,12 +90,22 @@ def vis_vcoco():
 
     all_t = 0
     for idx in img_inds:
-        # if idx != 27272:  # FIXME delete
+        fname = ds.split_filenames[split][idx]
+        imid = int(fname.split('_')[-1].split('.')[0])
+        # if fname not in ['COCO_train2014_000000047192.jpg',
+        #                  'COCO_train2014_000000114229.jpg',
+        #                  'COCO_train2014_000000175439.jpg',
+        #                  'COCO_train2014_000000180071.jpg',
+        #                  'COCO_train2014_000000321860.jpg',
+        #                  'COCO_train2014_000000334041.jpg',
+        #                  'COCO_train2014_000000567439.jpg',
+        #                  'COCO_train2014_000000568117.jpg']:
+        #     continue
+        # if idx != 27272:
         #     continue
         # rotated images:
         #     'train2015': [18679, 19135, 27301, 28302, 32020],
         #     'test2015': [3183, 7684, 8435, 8817],
-        fname = ds.split_filenames[split][idx]
 
         print(f'Image {idx + 1:6d}/{n}, file {fname}.')
 
@@ -185,8 +197,12 @@ def vis_vcoco():
             try:
                 obj_inds = im_data['obj_inds']
                 obj_boxes = dssplit._feat_provider.obj_boxes[obj_inds]
-                obj_classes = np.argmax(dssplit._feat_provider.obj_scores[obj_inds], axis=1)
                 obj_scores = dssplit._feat_provider.obj_scores[obj_inds]
+                obj_classes = np.argmax(obj_scores, axis=1)
+
+                # filter_inds = (obj_classes == 57)
+                # obj_boxes, obj_scores, obj_classes = obj_boxes[filter_inds], obj_scores[filter_inds], obj_classes[filter_inds]
+
                 labels = [dssplit.full_dataset.objects[c] for c in obj_classes]
                 labels = [f'{l} {obj_scores[i, obj_classes[i]]:.1f}' for i, l in enumerate(labels)]  # add scores
                 visualizer.overlay_instances(labels=labels, boxes=obj_boxes, alpha=0.7)

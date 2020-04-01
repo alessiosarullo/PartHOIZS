@@ -9,7 +9,6 @@ from sklearn.manifold import TSNE
 
 from config import cfg
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
-from lib.dataset.utils import Splits
 from lib.models.abstract_model import AbstractModel
 from scripts.utils import get_all_models_by_name
 
@@ -20,12 +19,12 @@ def run_and_save(func, fname):
 
     if cfg.seenf >= 0:
         inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-        act_inds = sorted(inds_dict[Splits.TRAIN.value]['act'].tolist())
-        obj_inds = sorted(inds_dict[Splits.TRAIN.value]['obj'].tolist())
+        act_inds = sorted(inds_dict['train']['act'].tolist())
+        obj_inds = sorted(inds_dict['train']['obj'].tolist())
     else:
         obj_inds = act_inds = None
 
-    train_split = HicoHakeKPSplit(split=Splits.TRAIN, full_dataset=HicoHake(), object_inds=obj_inds, action_inds=act_inds)
+    train_split = HicoHakeKPSplit(split='train', full_dataset=HicoHake(), object_inds=obj_inds, action_inds=act_inds)
     model = get_all_models_by_name()[cfg.model](train_split)  # type: AbstractModel
     ckpt = torch.load(cfg.best_model_file, map_location='cpu')
     model.load_state_dict(ckpt['state_dict'])
@@ -66,7 +65,7 @@ def show_act_tsne():
     print()
 
     inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-    seen_act_inds = np.array(sorted(inds_dict[Splits.TRAIN.value]['act'].tolist()))
+    seen_act_inds = np.array(sorted(inds_dict['train']['act'].tolist()))
     unseen_act_inds = np.setdiff1d(np.arange(hh.num_actions), seen_act_inds)
 
     act_class_embs = np.load(os.path.join(cfg.output_analysis_path, 'act_embs.npy'))

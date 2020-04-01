@@ -10,7 +10,7 @@ from scipy.io import loadmat
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
-from lib.dataset.utils import Splits, HoiTripletsData
+from lib.dataset.utils import HoiTripletsData
 
 
 class HicoSplit(HoiDatasetSplit):
@@ -35,13 +35,13 @@ class Hico(HoiDataset):
         null_action = driver.null_interaction
         interactions_classes = [[inter['pred'], inter['obj']] for inter in driver.interaction_list]
 
-        train_annotations = driver.split_annotations[Splits.TRAIN]
+        train_annotations = driver.split_annotations['train']
         train_annotations[np.isnan(train_annotations)] = 0
         train_annotations[train_annotations < 0] = 0
-        test_annotations = driver.split_annotations[Splits.TEST]
+        test_annotations = driver.split_annotations['test']
         test_annotations[np.isnan(test_annotations)] = 0
         test_annotations[test_annotations < 0] = 0
-        annotations_per_split = {Splits.TRAIN: train_annotations, Splits.TEST: test_annotations}
+        annotations_per_split = {'train': train_annotations, 'test': test_annotations}
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action,
                          interactions_classes=interactions_classes)
@@ -53,9 +53,9 @@ class Hico(HoiDataset):
         # Detection
         if hicodet:
             det_driver = HicoDetDriver()
-            self._split_det_data = {Splits.TRAIN: self.compute_annotations(split=Splits.TRAIN, det_driver=det_driver),
-                                    Splits.TEST: self.compute_annotations(split=Splits.TEST, det_driver=det_driver),
-                                    }  # type: Dict[Splits: HoiTripletsData]
+            self._split_det_data = {'train': self.compute_annotations(split='train', det_driver=det_driver),
+                                    'test': self.compute_annotations(split='test', det_driver=det_driver),
+                                    }  # type: Dict[str: HoiTripletsData]
 
     @property
     def split_filenames(self):
@@ -73,7 +73,7 @@ class Hico(HoiDataset):
         return os.path.join(self.split_img_dir[split], fname)
 
     def compute_annotations(self, split, det_driver) -> HoiTripletsData:
-        annotations = det_driver.split_annotations[split if split == Splits.TEST else Splits.TRAIN]
+        annotations = det_driver.split_annotations[split if split == 'test' else 'train']
 
         # There's a discrepancy between HICO's and HICO-DET's training sets: 38116 files vs 38118. 
         split_fnames = set(self.split_filenames[split])
@@ -149,7 +149,7 @@ class HicoDriver:
                 - 'obj' [str]: The name of the object of the action (i.e., the target).
                 - 'pred' [str]: The verb describing the action (key in `predicate_dict`).
                 - 'pred_wid' [str]: The WordNet ID of the action (key in `wn_action_dict`), or None for the null interaction.
-            - split_annotations [dict(ndarray)]: One entry per split, with keys in `Splits`.
+            - split_annotations [dict(ndarray)]: One entry per split, with keys in ['train', 'test'].
                 Each entry is a matrix with dimensions [num_images, num_interactions] and each cell ij has a value in {-1, 0, 1} according to whether
                 action j is a hard negative, uncertain/unknown or a hard positive in image i.
         """
@@ -161,10 +161,10 @@ class HicoDriver:
 
         # Annotations
         train_annotations, train_fns, test_annotations, test_fns, interaction_list, wn_pred_dict, pred_dict = self.load_annotations()
-        self.split_img_dir = {Splits.TRAIN: os.path.join(self.data_dir, 'images', 'train2015'),
-                              Splits.TEST: os.path.join(self.data_dir, 'images', 'test2015')}
-        self.split_annotations = {Splits.TRAIN: train_annotations, Splits.TEST: test_annotations}
-        self.split_filenames = {Splits.TRAIN: train_fns, Splits.TEST: test_fns}
+        self.split_img_dir = {'train': os.path.join(self.data_dir, 'images', 'train2015'),
+                              'test': os.path.join(self.data_dir, 'images', 'test2015')}
+        self.split_annotations = {'train': train_annotations, 'test': test_annotations}
+        self.split_filenames = {'train': train_fns, 'test': test_fns}
         self.interaction_list = interaction_list
         self.wn_predicate_dict = wn_pred_dict
         self.predicate_dict = pred_dict
@@ -174,10 +174,10 @@ class HicoDriver:
         try:
             with open(self.path_pickle_annotation_file, 'rb') as f:
                 d = pickle.load(f)
-                train_annotations = d[f'{Splits.TRAIN.value}_anno']
-                train_fns = d[f'{Splits.TRAIN.value}_fn']
-                test_annotations = d[f'{Splits.TEST.value}_anno']
-                test_fns = d[f'{Splits.TEST.value}_fn']
+                train_annotations = d[f'train_anno']
+                train_fns = d[f'train_fn']
+                test_annotations = d[f'test_anno']
+                test_fns = d[f'test_fn']
                 interaction_list = d['interaction_list']
                 wn_pred_dict = d['wn_pred_dict']
                 pred_dict = d['pred_dict']
@@ -196,10 +196,10 @@ class HicoDriver:
             interaction_list, wn_pred_dict, pred_dict = self.parse_interaction_list(src_anns['list_action'])
 
             with open(self.path_pickle_annotation_file, 'wb') as f:
-                pickle.dump({f'{Splits.TRAIN.value}_anno': train_annotations,
-                             f'{Splits.TRAIN.value}_fn': train_fns,
-                             f'{Splits.TEST.value}_anno': test_annotations,
-                             f'{Splits.TEST.value}_fn': test_fns,
+                pickle.dump({f'train_anno': train_annotations,
+                             f'train_fn': train_fns,
+                             f'test_anno': test_annotations,
+                             f'test_fn': test_fns,
                              'interaction_list': interaction_list,
                              'wn_pred_dict': wn_pred_dict,
                              'pred_dict': pred_dict,
@@ -330,7 +330,7 @@ class HicoDetDriver:
                 - 'obj' [str]: The name of the object of the action (i.e., the target).
                 - 'act' [str]: The verb describing the action (key in `action_dict`).
                 - 'act_wid' [str]: The WordNet ID of the action (key in `wn_action_dict`), or None for the null interaction.
-            - split_data [dict(dict)]: One entry per split, with keys in `Splits`. Each entry is a dictionary with the following items:
+            - split_data [dict(dict)]: One entry per split, with keys in ['train', 'test']. Each entry is a dictionary with the following items:
                 - 'img_dir' [str]: Path to the folder containing the images
                 - 'annotations' [list(dict)]: Annotations for each image, thus structured:
                     - 'file' [str]: The file name
@@ -350,9 +350,9 @@ class HicoDetDriver:
         self.null_interaction = '__no_interaction__'
 
         train_annotations, test_annotations, interaction_list, wn_act_dict, act_dict = self.load_annotations()
-        self.split_img_dir = {Splits.TRAIN: os.path.join(self.data_dir, 'images', 'train2015'),
-                              Splits.TEST: os.path.join(self.data_dir, 'images', 'test2015')}
-        self.split_annotations = {Splits.TRAIN: train_annotations, Splits.TEST: test_annotations}
+        self.split_img_dir = {'train': os.path.join(self.data_dir, 'images', 'train2015'),
+                              'test': os.path.join(self.data_dir, 'images', 'test2015')}
+        self.split_annotations = {'train': train_annotations, 'test': test_annotations}
         self.interaction_list = interaction_list
         self.wn_action_dict = wn_act_dict
         self.action_dict = act_dict
@@ -383,22 +383,22 @@ class HicoDetDriver:
         try:
             with open(self.path_pickle_annotation_file, 'rb') as f:
                 d = pickle.load(f)
-                train_annotations = d[Splits.TRAIN.value]
-                test_annotations = d[Splits.TEST.value]
+                train_annotations = d['train']
+                test_annotations = d['test']
                 interaction_list = d['interaction_list']
                 wn_act_dict = d['wn_act_dict']
                 act_dict = d['act_dict']
         except FileNotFoundError:
             src_anns = loadmat(os.path.join(self.data_dir, 'anno_bbox.mat'), squeeze_me=True)
 
-            train_annotations = _parse_split(_split=Splits.TRAIN)
-            test_annotations = _parse_split(_split=Splits.TEST)
+            train_annotations = _parse_split(_split='train')
+            test_annotations = _parse_split(_split='test')
 
             interaction_list, wn_act_dict, act_dict = self.parse_interaction_list(src_anns['list_action'])
 
             with open(self.path_pickle_annotation_file, 'wb') as f:
-                pickle.dump({Splits.TRAIN.value: train_annotations,
-                             Splits.TEST.value: test_annotations,
+                pickle.dump({'train': train_annotations,
+                             'test': test_annotations,
                              'interaction_list': interaction_list,
                              'wn_act_dict': wn_act_dict,
                              'act_dict': act_dict,

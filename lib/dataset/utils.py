@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import NamedTuple, List, Union
 
 import h5py
@@ -6,8 +5,6 @@ import numpy as np
 import torch
 
 from config import cfg
-from lib.bbox_utils import compute_ious
-
 
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane',
@@ -24,19 +21,6 @@ COCO_CLASSES = [
     'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
     'scissors', 'teddy bear', 'hair drier', 'toothbrush', '__background__'
 ]
-
-
-class Splits(Enum):
-    TRAIN = 'train'
-    VAL = 'val'
-    TEST = 'test'
-
-
-class HoiData(NamedTuple):
-    im_idx: int
-    fname_id: int
-    p_idx: int
-    o_idx: int
 
 
 class HoiTripletsData(NamedTuple):

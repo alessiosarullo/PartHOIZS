@@ -31,7 +31,7 @@ class HicoDetHakeSplit(HicoHakeSplit):
     def hold_out(self, ratio):
         if not cfg.no_filter_bg_only:
             print('!!!!!!!!!! Not filtering background-only images.')
-        num_examples = len(self._feat_provider.hoi_data_cache)
+        num_examples = len(self._feat_provider.ho_infos)
         example_ids = np.arange(num_examples)
         num_examples_to_keep = num_examples - int(num_examples * ratio)
         keep_inds = np.random.choice(example_ids, size=num_examples_to_keep, replace=False)
@@ -69,13 +69,13 @@ class HicoDetHakeSplit(HicoHakeSplit):
     #     return data_loader
 
     def __len__(self):
-        return len(self._feat_provider.hoi_data_cache)
+        return len(self._feat_provider.ho_infos)
 
     def _collate(self, idx_list, device):  # FIXME
         Timer.get('GetBatch').tic()
 
         idxs = np.array(idx_list)
-        im_idxs = self._feat_provider.hoi_data_cache_np[idxs, 0]
+        im_idxs = self._feat_provider.ho_infos[idxs, 0]
         mb = self._feat_provider.collate(idx_list, device)
         if self.split != Splits.TEST:
             img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
@@ -102,12 +102,9 @@ class BalancedTripletMLSampler(torch.utils.data.Sampler):
 
         act_labels = dataset.pc_action_labels
 
-        if cfg.null_as_bg:
-            pos_hois_mask = np.any(act_labels[:, 1:], axis=1)
-            neg_hois_mask = (act_labels[:, 0] > 0)
-        else:
-            pos_hois_mask = np.any(act_labels, axis=1)
-            neg_hois_mask = np.all(act_labels == 0, axis=1)
+        # Note: negatives = background, as opposed to not being labelled at all
+        pos_hois_mask = np.any(act_labels[:, 1:], axis=1)
+        neg_hois_mask = (act_labels[:, 0] > 0)
         assert np.all(pos_hois_mask ^ neg_hois_mask)
 
         pc_ho_im_ids = dataset.pc_image_ids[dataset.pc_ho_im_idxs]

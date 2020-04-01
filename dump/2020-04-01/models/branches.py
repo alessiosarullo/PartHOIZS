@@ -8,7 +8,8 @@ from config import cfg
 from lib.dataset.hico_hake import HicoHakeKPSplit
 from lib.dataset.utils import interactions_to_mat, Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
-from lib.models.misc import bce_loss, LIS, MemoryEfficientSwish as Swish
+from lib.models.gcns import BipartiteGCN
+from lib.models.misc import bce_loss, weighted_binary_cross_entropy_with_logits, LIS, MemoryEfficientSwish as Swish
 
 
 class LabelData(NamedTuple):
@@ -245,6 +246,22 @@ class SpatialConfigurationBranch(AbstractBranch):
 
     def _reduce_logits(self, logits):
         return logits.max(dim=2)[0].max(dim=1)[0]
+
+
+class HoiUninteractivenessBranch(SpatialConfigurationBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _get_label_inds(self):
+        return np.flatnonzero(self.dataset.full_dataset.interactions[:, 0] == 0)  # null interactions
+
+    def _get_losses(self, x: Minibatch, output, **kwargs):
+        labels = x.ex_labels[:, self.label_inds]
+        losses = {f'hoi_bg_loss': bce_loss(output, labels)}
+        return losses
+
+    def _reduce_logits(self, logits):
+        return logits.min(dim=2)[0].min(dim=1)[0]
 
 
 class PartUninteractivenessBranch(SpatialConfigurationBranch):
@@ -556,3 +573,242 @@ class ZSGCBranch(ZSBranch):
         if self.ld.tag == 'obj':
             zs_predictor = zs_predictor + self.repr_mlps['wemb_predictor'](self.word_embs)
         return zs_predictor.t()
+
+
+class SeenRecBranch(AbstractBranch):
+    def __init__(self, hoi_repr_dim, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.zs_enabled and cfg.no_filter_bg_only
+        self._add_mlp(name='seen_rec', input_dim=hoi_repr_dim, output_dim=1)
+
+    def _get_losses(self, x: Minibatch, output, **kwargs):
+        interaction_labels = x.ex_labels
+        labels = interaction_labels[:, self.dataset.seen_interactions].sum(dim=1, keepdim=True).clamp(max=1)
+        assert output.shape[1] == labels.shape[1]
+        losses = {f'seen_loss': bce_loss(output, labels)}
+        return losses
+
+    def _predict(self, x: Minibatch, output, **kwargs):
+        return torch.sigmoid(output).cpu().numpy()
+
+    def _forward(self, x: Minibatch):
+        repr = self.cache['hoi_repr']
+        seen_logits = self.repr_mlps['seen_rec'](repr)
+        return seen_logits
+
+
+class FromObjBranch(ZSGCBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._add_mlp(name='obj_to_hoi', input_dim=self.dataset.num_objects, output_dim=self.repr_dim,
+                      num_classes=self.ld.num_classes)
+
+    def _get_repr(self, x: Minibatch):
+        obj_boxes, obj_scores, obj_feats = x.obj_data[:3]
+        return self.repr_mlps['obj_to_hoi'](obj_scores)
+
+    def _reduce_logits(self, logits):
+        return logits.max(dim=1)[0]
+
+
+class FromPoseBranch(ZSGCBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert cfg.tin
+        D = self.dims.D
+        d = D // 4
+        pose_ch = 32
+
+        self.pose_module = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=pose_ch, kernel_size=(5, 5), padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+            nn.Conv2d(in_channels=pose_ch, out_channels=pose_ch // 2, kernel_size=(5, 5), padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+            # Output is (N, D/4, D/4, pose_ch/2)
+        )
+        self._add_mlp(name='from_pose', input_dim=d * d * pose_ch // 2, output_dim=self.repr_dim)
+
+    def _get_repr(self, x: Minibatch):
+        ppl_boxes, ppl_feats, coco_kps, kp_boxes, kp_feats, ipatterns = x.person_data[:6]
+        P, M, D = self.dims.P, self.dims.M, self.dims.D
+        N = ppl_boxes.shape[0]
+        ipatterns = ipatterns.view(N * P * M, D, D, -1).permute(0, 3, 1, 2)
+        pose_feats = self.pose_module(ipatterns[:, -1:, ...]).view(N * P * M, -1).view(N, P, M, -1)
+        return self.repr_mlps['from_pose'](pose_feats)
+
+    def _reduce_logits(self, logits):
+        return logits.max(dim=2)[0].max(dim=1)[0]
+
+
+class FromBoxesBranch(ZSGCBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._add_mlp(name='from_boxes', input_dim=self.dims.F_kp + self.dims.F_obj, output_dim=self.repr_dim)
+
+    def _get_repr(self, x: Minibatch):
+        ppl_boxes, ppl_feats, coco_kps, kp_boxes, kp_feats = x.person_data[:5]
+        obj_boxes, obj_scores, obj_feats = x.obj_data[:3]
+        P, M, D, F_kp, F_obj = self.dims.P, self.dims.M, self.dims.D, self.dims.F_kp, self.dims.F_obj
+        interaction_feats = torch.cat([ppl_feats.unsqueeze(dim=2).expand(-1, P, M, F_kp),
+                                       obj_feats.unsqueeze(dim=1).expand(-1, P, M, F_obj),
+                                       ], dim=-1)
+        return self.repr_mlps['from_boxes'](interaction_feats)
+
+    def _reduce_logits(self, logits):
+        return logits.max(dim=2)[0].max(dim=1)[0]
+
+
+class FromSpConfBranch(ZSGCBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.spconf = SpatialConfigurationModule(*args, **kwargs)
+        self._add_mlp(name='from_spconf', input_dim=self.spconf.repr_dim, output_dim=self.repr_dim)
+
+    def _get_repr(self, x: Minibatch):
+        spconf_feats = self.spconf(x)
+        return self.repr_mlps['from_spconf'](spconf_feats)
+
+    def _reduce_logits(self, logits):
+        return logits.max(dim=2)[0].max(dim=1)[0]
+
+
+class FromPartStateLogitsCooccAttBranch(ZSBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        hh = self.dataset.full_dataset
+        fg_part_states = np.concatenate([inds[:-1] for inds in hh.states_per_part])
+        inters = hh.split_labels[self.dataset.split]
+        part_states = hh.split_part_annotations[self.dataset.split]
+
+        part_states = part_states[:, fg_part_states]
+        pstate_inters_cooccs = part_states.T @ inters
+        pstate_inters_cooccs /= np.maximum(1, pstate_inters_cooccs.sum(axis=0, keepdims=True))
+
+        self.fg_part_states = nn.Parameter(torch.from_numpy(fg_part_states).long(), requires_grad=False)
+        self.pstate_inters_cooccs = nn.Parameter(torch.from_numpy(pstate_inters_cooccs).float(), requires_grad=False)
+
+    def _forward(self, x: Minibatch):
+        part_dir_logits = self.cache['part_dir_logits']
+        logits = part_dir_logits[:, self.fg_part_states] @ self.pstate_inters_cooccs
+        dir_logits = logits
+        if self.zs_enabled:
+            zs_logits = logits
+        else:
+            zs_logits = None
+        return dir_logits, zs_logits
+
+
+class FromPartStateLogitsAttBranch(ZSBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        fg_part_states = np.concatenate([inds[:-1] for inds in self.dataset.full_dataset.states_per_part])
+        self.fg_part_states = nn.Parameter(torch.from_numpy(fg_part_states).long(), requires_grad=False)
+        self.S_pos = self.fg_part_states.shape[0]
+
+        self._add_mlp(name='pstate_att_from_boxes', input_dim=self.dims.F_kp + self.dims.F_obj, output_dim=self.repr_dim,
+                      num_classes=self.S_pos * self.dims.C)
+
+    def _forward(self, x: Minibatch):
+        pstate_logits = self.cache['part_dir_logits']  # N x S
+
+        ppl_boxes, ppl_feats, coco_kps, kp_boxes, kp_feats = x.person_data[:5]
+        obj_boxes, obj_scores, obj_feats = x.obj_data[:3]
+        P, M, C, S, F_kp, F_obj = self.dims.P, self.dims.M, self.dims.C, self.dims.S, self.dims.F_kp, self.dims.F_obj
+        interaction_feats = torch.cat([ppl_feats.unsqueeze(dim=2).expand(-1, P, M, F_kp),
+                                       obj_feats.unsqueeze(dim=1).expand(-1, P, M, F_obj)
+                                       ], dim=-1)
+
+        pstate_att_coeffs = self.repr_mlps['pstate_att_from_boxes'](interaction_feats) @ self.linear_predictors['pstate_att_from_boxes']
+        pstate_att = nn.functional.softmax(pstate_att_coeffs.view(-1, P, M, self.S_pos, C), dim=-2)
+
+        pstate_logits = pstate_logits.unsqueeze(dim=1).unsqueeze(dim=1).expand(-1, P, M, S).unsqueeze(dim=-2)  # N x P x M x 1 x S
+        logits = pstate_logits[..., self.fg_part_states] @ pstate_att  # N x P x M x 1 x C
+        logits = logits.squeeze(dim=-2).max(dim=2)[0].max(dim=1)[0]  # N x C
+
+        dir_logits = logits
+        if self.zs_enabled:
+            zs_logits = logits
+        else:
+            zs_logits = None
+        return dir_logits, zs_logits
+
+
+class FromPartStateLogitsGCNAttBranch(ZSGCBranch):
+    def __init__(self, part_branch: PartStateBranch, att_repr_dim=256, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.part_branch = part_branch
+        hh = self.dataset.full_dataset
+
+        fg_part_states = np.concatenate([inds[:-1] for inds in hh.states_per_part])
+        self.fg_part_states = nn.Parameter(torch.from_numpy(fg_part_states).long(), requires_grad=False)
+        self.S_pos = self.fg_part_states.shape[0]
+
+        # Define state-interaction attention matrix based on dataset's co-occurrences
+        inters = hh.split_labels[self.dataset.split]
+        part_states = hh.split_part_annotations[self.dataset.split]
+        part_states = part_states[:, fg_part_states]
+        pstate_inters_cooccs = part_states.T @ inters  # S_pos
+        pstate_inters_cooccs /= np.maximum(1, pstate_inters_cooccs.sum(axis=0, keepdims=True))
+        pstate_inters_affordance = (torch.from_numpy(pstate_inters_cooccs) > 0).float()
+        self.pstate_inters_affordance = nn.Parameter(pstate_inters_affordance, requires_grad=False)
+
+        gc_latent_dim = cfg.gcldim
+        gc_emb_dim = cfg.gcrdim
+        gc_dims = ((gc_emb_dim + gc_latent_dim) // 2, gc_latent_dim)
+        self.state_hoi_gcn = BipartiteGCN(adj_block=pstate_inters_affordance, input_dim=gc_emb_dim, gc_dims=gc_dims)
+
+        self._add_mlp(name='pstate_decoder', input_dim=gc_latent_dim, output_dim=att_repr_dim)
+        self._add_mlp(name='hoi_decoder', input_dim=gc_latent_dim, output_dim=att_repr_dim)
+        self._add_mlp(name='pstate_att', input_dim=2 * att_repr_dim, output_dim=1)
+
+    def _get_losses(self, x: Minibatch, output, **kwargs):
+        losses = super()._get_losses(x, output=output[:2])
+        state_hoi_logit_att_mat = output[2]
+        if cfg.gat_instance:
+            interaction_labels, part_state_labels = x.ex_labels, x.pstate_labels
+            labels = self.ld.label_f(interaction_labels)[:, self.train_seen_inds]  # N x C_seen
+            N = labels.shape[0]
+            gt_state_hoi_att_mat = (part_state_labels[:, self.fg_part_states].unsqueeze(dim=2) * labels.unsqueeze(dim=1))  # N x S_pos x C_seen
+            pred_state_hoi_att_mat = state_hoi_logit_att_mat[:, self.train_seen_inds].unsqueeze(dim=0).expand(N, -1, -1)  # N x S_pos x C_seen
+            losses[f'state-hoi_att_loss'] = bce_loss(pred_state_hoi_att_mat.view(N, -1), gt_state_hoi_att_mat.view(N, -1))
+        else:
+            pred_state_hoi_att_mat = state_hoi_logit_att_mat[:, self.train_seen_inds]  # S_pos x C_seen
+            gt_state_hoi_att_mat = self.pstate_inters_affordance[:, self.train_seen_inds]  # S_pos x C_seen
+            if cfg.nocspos:
+                pos_weights = None
+            else:
+                pos_weights = 1 / gt_state_hoi_att_mat.sum(dim=1).clamp(min=1)
+            losses[f'state-hoi_att_loss'] = bce_loss(pred_state_hoi_att_mat.t(), gt_state_hoi_att_mat.t(), pos_weights=pos_weights)
+        return losses
+
+    def _predict(self, x: Minibatch, output, **kwargs):
+        return super()._predict(x, output=output[:2])
+
+    def _forward(self, x: Minibatch):
+        pstate_logits = self.cache['part_dir_logits']  # N x S
+        P, M, S = self.dims.P, self.dims.M, self.dims.S
+
+        pstate_att, pstate_att_unbounded = self._get_pstate_att(x)
+        pstate_logits = pstate_logits.unsqueeze(dim=1).unsqueeze(dim=1).expand(-1, P, M, S).unsqueeze(dim=-2)  # N x P x M x 1 x S
+        logits = pstate_logits[..., self.fg_part_states] @ pstate_att  # N x P x M x 1 x C
+        logits = logits.squeeze(dim=-2).max(dim=2)[0].max(dim=1)[0]  # N x C
+
+        dir_logits = logits
+        if self.zs_enabled:
+            zs_logits = logits
+        else:
+            zs_logits = None
+        return dir_logits, zs_logits, pstate_att_unbounded
+
+    def _get_pstate_att(self, x: Minibatch):
+        pstate_repr, hoi_repr = self.state_hoi_gcn()
+        pstate_att_repr = self.repr_mlps['pstate_decoder'](pstate_repr)
+        hoi_att_repr = self.repr_mlps['hoi_decoder'](hoi_repr)
+        att_repr = torch.cat([pstate_att_repr.unsqueeze(dim=1).expand(-1, self.dims.C, -1),
+                              hoi_att_repr.unsqueeze(dim=0).expand(self.S_pos, -1, -1)
+                              ], dim=-1)
+        pstate_att_unbounded = self.repr_mlps['pstate_att'](att_repr).squeeze(dim=-1)  # S_pos x C
+        pstate_att = nn.functional.softmax(pstate_att_unbounded, dim=0)
+        return pstate_att, pstate_att_unbounded

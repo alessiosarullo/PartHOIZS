@@ -9,7 +9,7 @@ import torch
 from tensorboardX import SummaryWriter
 
 from config import cfg
-from lib.dataset.utils import Splits
+
 from lib.timer import Timer
 
 
@@ -147,7 +147,7 @@ class RunningStats:
         batch_str = 'ex {:5d}/{:5d}'.format(batch, num_batches - 1) if batch is not None else ''
         epoch_str = 'epoch {:2d}'.format(epoch) if epoch is not None else ''
         curr_iter_str = 'iter {:6d}'.format(curr_iter) if curr_iter is not None else ''
-        if self.split == Splits.TRAIN:
+        if self.split == 'train':
             header = '{:s} {:s} ({:s}, {:s}).'.format(self.split_str, curr_iter_str, epoch_str, batch_str)
         else:
             if epoch is not None:

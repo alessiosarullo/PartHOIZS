@@ -10,7 +10,7 @@ from torchvision.models import resnet152
 from config import cfg
 from lib.dataset.hico import HicoSplit
 from lib.dataset.vcoco import VCocoSplit
-from lib.dataset.utils import Splits
+
 
 
 def forward(model, x):
@@ -49,7 +49,6 @@ def save_feats():
         splits = HicoSplit.get_splits()
     else:
         splits = VCocoSplit.get_splits()
-    assert Splits.VAL not in splits
 
     img_transform = transforms.Compose([
         transforms.Resize(256),
@@ -66,7 +65,7 @@ def save_feats():
         device = torch.device('cpu')
         print('!!!!!!!!!!!!!!!!! Running on CPU!')
     vm.eval()
-    for split in [Splits.TRAIN, Splits.TEST]:
+    for split in ['train', 'test']:
         hds = splits[split]
 
         precomputed_feats_fn = cfg.precomputed_feats_format % ('new_cached_file', 'resnet152', split.value)

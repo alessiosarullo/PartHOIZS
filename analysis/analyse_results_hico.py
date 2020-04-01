@@ -36,7 +36,7 @@ from PIL import Image
 from config import cfg
 from lib.models.abstract_model import Prediction
 from lib.dataset.hico_hake import HicoHakeKPSplit
-from lib.dataset.utils import Splits, interactions_to_mat
+from lib.dataset.utils import interactions_to_mat
 from lib.dataset.hico_hake import HicoHake
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub, plot_mat
@@ -95,7 +95,7 @@ def _setup_and_load():
     with open(cfg.prediction_file, 'rb') as f:
         results = pickle.load(f)
     cfg.load()
-    return results, Splits.TEST
+    return results, 'test'
 
 
 def stats():
@@ -112,11 +112,11 @@ def stats():
     os.makedirs(res_save_path, exist_ok=True)
 
     inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-    seen_act_inds = inds_dict[Splits.TRAIN.value]['act']
-    seen_obj_inds = inds_dict[Splits.TRAIN.value]['obj']
+    seen_act_inds = inds_dict['train']['act']
+    seen_obj_inds = inds_dict['train']['obj']
 
     hh = HicoHake()
-    test_split = HicoHakeKPSplit(split=Splits.TEST, full_dataset=hh, no_feats=True)
+    test_split = HicoHakeKPSplit(split='test', full_dataset=hh, no_feats=True)
     analyser = Analyser(dataset=test_split, hoi_score_thr=args.hoi_thr)
 
     def _hoi_labels_to_act_labels(hoi_labels):
@@ -185,11 +185,11 @@ def print_predictions():
 
     assert cfg.seenf >= 0
     inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-    obj_inds = sorted(inds_dict[Splits.TRAIN.value]['obj'].tolist())
-    act_inds = sorted(inds_dict[Splits.TRAIN.value]['act'].tolist())
+    obj_inds = sorted(inds_dict['train']['obj'].tolist())
+    act_inds = sorted(inds_dict['train']['act'].tolist())
 
-    print(f'{Splits.TRAIN.value.capitalize()} objects ({len(obj_inds)}):', [hh.objects[i] for i in obj_inds])
-    print(f'{Splits.TRAIN.value.capitalize()} actions ({len(act_inds)}):', [hh.actions[i] for i in act_inds])
+    print(f'Train objects ({len(obj_inds)}):', [hh.objects[i] for i in obj_inds])
+    print(f'Train actions ({len(act_inds)}):', [hh.actions[i] for i in act_inds])
     seen_objs = set(obj_inds)
     seen_acts = set(act_inds)
 
@@ -310,12 +310,12 @@ def save_pstate_hoi_att():
 
         assert cfg.seenf >= 0
         inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-        obj_inds = np.array(sorted(inds_dict[Splits.TRAIN.value]['obj'].tolist()))
-        act_inds = np.array(sorted(inds_dict[Splits.TRAIN.value]['act'].tolist()))
+        obj_inds = np.array(sorted(inds_dict['train']['obj'].tolist()))
+        act_inds = np.array(sorted(inds_dict['train']['act'].tolist()))
         seen_interactions = np.setdiff1d(np.unique(hh.oa_pair_to_interaction[obj_inds, :][:, act_inds]), -1)
 
         # GT
-        split = Splits.TRAIN
+        split = 'train'
         inters = hh.split_labels[split]
         part_states = hh.split_part_annotations[split]
         fg_part_states = np.concatenate([inds[:-1] for inds in hh.states_per_part])

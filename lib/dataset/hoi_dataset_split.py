@@ -1,6 +1,5 @@
-from typing import List, Dict, Union
-
 import os
+from typing import List, Dict, Union
 
 import numpy as np
 import torch
@@ -10,12 +9,11 @@ from torch.utils.data import Dataset, Subset
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.tin_utils import get_next_sp_with_pose
-from lib.dataset.utils import Splits, Dims, Minibatch, PrecomputedFilesHandler, COCO_CLASSES, filter_on_score, get_hico_to_coco_mapping, HoiData
+from lib.dataset.utils import Dims, Minibatch, PrecomputedFilesHandler, COCO_CLASSES, filter_on_score
 
 
 class AbstractHoiDatasetSplit(Dataset):
     def __init__(self, split):
-        assert split != Splits.VAL
         self.split = split
 
     @property
@@ -133,12 +131,12 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
     def get_loader(self, batch_size, num_workers=0, num_gpus=1, shuffle=None, drop_last=None, holdout_set=False, **kwargs):
         if shuffle is None:
-            shuffle = True if self.split == Splits.TRAIN else False
+            shuffle = True if self.split == 'train' else False
         if drop_last is None:
-            drop_last = False if self.split == Splits.TEST else True
+            drop_last = False if self.split == 'test' else True
         batch_size = batch_size * num_gpus
 
-        if self.split == Splits.TEST:
+        if self.split == 'test':
             ds = self
         else:
             if self.keep_inds is None:
@@ -174,13 +172,13 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         splits = {}
         full_dataset = cls.instantiate_full_dataset()
 
-        train_split = cls(split=Splits.TRAIN, full_dataset=full_dataset, object_inds=obj_inds, action_inds=act_inds)
+        train_split = cls(split='train', full_dataset=full_dataset, object_inds=obj_inds, action_inds=act_inds)
         if cfg.val_ratio > 0:
             train_split.hold_out(ratio=cfg.val_ratio)
-        splits[Splits.TRAIN] = train_split
-        splits[Splits.TEST] = cls(split=Splits.TEST, full_dataset=full_dataset)
+        splits['train'] = train_split
+        splits['test'] = cls(split='test', full_dataset=full_dataset)
 
-        train_str = Splits.TRAIN.value.capitalize()
+        train_str = 'train'.capitalize()
         if obj_inds is not None:
             print(f'{train_str} objects ({train_split.seen_objects.size}):', train_split.seen_objects.tolist())
         if act_inds is not None:
@@ -192,7 +190,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
 
 class FeatProvider:
-    def __init__(self, ds: HoiDatasetSplit, ds_name, no_feats=False, obj_mapping=None):
+    def __init__(self, ds: HoiDatasetSplit, ds_name, no_feats=False, obj_mapping=None, filter_bg_and_human_objs=True):
         super().__init__()
         self.wrapped_ds = ds
         self.full_dataset = self.wrapped_ds.full_dataset
@@ -252,11 +250,11 @@ class FeatProvider:
         #############################################################################################################################
         # Cache variables to speed up loading
         #############################################################################################################################
-        self.img_data_cache, imgs_with_kps = self._compute_img_data()  # type: List[Dict], List
+        self.img_data_cache, imgs_with_kps = self._compute_img_data(filter_bg_and_human_objs)  # type: List[Dict], List
         assert len(self.img_data_cache) == len(self.wrapped_ds.fnames)
         self.non_empty_imgs = np.array(imgs_with_kps)
 
-    def _compute_img_data(self):
+    def _compute_img_data(self, filter_bg_and_human_objs):
         """
         Fields: 'fname_id': int, 'person_inds': array, 'obj_inds': array
         """
@@ -266,7 +264,7 @@ class FeatProvider:
         obj_to_keep = (obj_classes != COCO_CLASSES.index('__background__')) & (obj_classes != COCO_CLASSES.index('person'))
         fname_id_to_obj_inds = {}
         for i, fid in enumerate(PrecomputedFilesHandler.get(self.objects_fn, 'fname_ids')):
-            if obj_to_keep[i]:
+            if filter_bg_and_human_objs and obj_to_keep[i]:
                 fname_id_to_obj_inds.setdefault(fid, []).append(i)
         fname_id_to_obj_inds = {k: np.array(sorted(v)) for k, v in fname_id_to_obj_inds.items()}
 
@@ -326,7 +324,7 @@ class ImgInstancesFeatProvider(FeatProvider):
         feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
 
         # Image data
-        im_ids = [f'{self.split.value}_{idx}' for idx in idxs]
+        im_ids = [self.wrapped_ds.fnames[idx] for idx in idxs]
         im_feats = feats
         orig_img_wh = torch.tensor(self.wrapped_ds.img_dims[idxs, :], dtype=torch.float32, device=device)
 
@@ -414,47 +412,71 @@ class ImgInstancesFeatProvider(FeatProvider):
 
 
 class HoiInstancesFeatProvider(FeatProvider):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.hoi_data_cache = self._compute_hoi_data()  # type: List[HoiData]
-        self.hoi_data_cache_np = np.stack(self.hoi_data_cache, axis=0)  # type: np.ndarray[np.int]
+    def __init__(self, ds_name, *args, **kwargs):
+        super().__init__(ds_name=ds_name, *args, **kwargs)
+        self.hoi_fn  = os.path.join(cfg.cache_root, f'precomputed_{ds_name}_hoi_assignment_file__{self.split.value}.h5')
+        ho_infos = PrecomputedFilesHandler.get(self.hoi_fn, 'ho_infos', load_in_memory=True)
 
-    def _compute_hoi_data(self):
-        """
-        Fields: 'fname_id', 'person_idx', 'obj_idx', 'hoi_class'
-        """
-        all_hoi_data = []
-        for im_idx, imdata in enumerate(self.img_data_cache):
-            if 'person_inds' in imdata and 'obj_inds' in imdata:
-                for p in imdata.get('person_inds', []):
-                    for o in imdata.get('obj_inds', []):
-                        hoi_data = HoiData(im_idx=im_idx,
-                                           fname_id=imdata['fname_id'],
-                                           p_idx=p,
-                                           o_idx=o,
-                                           )
-                        all_hoi_data.append(hoi_data)
-        return all_hoi_data
+        fname_ids_to_img_idx = {imdata['fname_id']: im_idx for im_idx, imdata in enumerate(self.img_data_cache)}
+        ho_im_idxs = np.array([fname_ids_to_img_idx[fname_id] for fname_id in ho_infos[:, 0]])
+        ho_infos = np.concatenate([ho_im_idxs[:, None], ho_infos], axis=1)  # [im_idx, fname_id, hum_idx, obj_idx, is_obj_human]
+
+        # Sanity check and filtering. Indices might not be in the image data because filtering is performed that might remove some person/objects.
+        all_person_inds = {idx for im_data in self.img_data_cache for idx in im_data.get('person_inds', [])}
+        all_obj_inds = {idx for im_data in self.img_data_cache for idx in im_data.get('obj_inds', [])}
+        valid_hois = []
+        for i, (im_idx, fname_id, hum_idx, obj_idx, is_obj_human) in enumerate(ho_infos):
+            im_data = self.img_data_cache[im_idx]
+            assert fname_id == im_data['fname_id']
+
+            if hum_idx in all_person_inds:
+                assert hum_idx in im_data['person_inds']
+            else:
+                continue
+
+            if is_obj_human:
+                if obj_idx in all_person_inds:
+                    assert obj_idx in im_data['person_inds']
+                else:
+                    continue
+            else:
+                if obj_idx in all_obj_inds:
+                    assert obj_idx in im_data['obj_inds']
+                else:
+                    continue
+            valid_hois.append(i)
+
+        valid_hois = np.array(valid_hois)
+        self.ho_infos = ho_infos[valid_hois]
+        if self.split != 'test':
+            self.action_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'action_labels', load_in_memory=True)[valid_hois]
+            print(f'Negatives per positive: {np.sum(self.action_labels[:, 0] > 0) / np.sum(self.action_labels[:, 0] == 0)}')
+        else:
+            self.action_labels = None
+
+        self.non_empty_imgs = np.unique(self.ho_infos[:, 0])
 
     def collate(self, idx_list, device) -> Minibatch:
         idxs = np.array(idx_list)
-        im_idxs = self.hoi_data_cache_np[idxs, 0]
+        im_idxs = self.ho_infos[idxs, 0]
 
         # Example data
         ex_ids = [f'ex{idx}' for idx in idxs]
-        feats = torch.tensor(self.pc_img_feats[im_idxs, :], dtype=torch.float32, device=device)
+        feats = torch.tensor(self.pc_img_feats[im_idxs, :], dtype=torch.float32, device=device)  # FIXME
 
         # Image data
-        im_ids = [f'{self.split.value}_{idx}' for idx in im_idxs]
+        im_ids = [self.wrapped_ds.fnames[idx] for idx in idxs]
         im_feats = feats
         orig_img_wh = torch.tensor(self.img_dims[im_idxs, :], dtype=torch.float32, device=device)
 
         dims = self.wrapped_ds.dims
-        P, M, K_coco, K_hake, B, O, F_kp, F_obj, D = dims.P, dims.M, dims.K_coco, dims.K_hake, dims.B, dims.O, dims.F_kp, dims.F_obj, dims.D
+        assert dims.F_kp == dims.F_obj
+        P, M, K_hake, D = dims.P, dims.M, dims.K_hake, dims.D
         N = idxs.size
 
-        person_inds = self.hoi_data_cache_np[idxs, 2].astype(np.int, copy=False)
-        obj_inds = self.hoi_data_cache_np[idxs, 3].astype(np.int, copy=False)
+        person_inds = self.ho_infos[idxs, 2].astype(np.int, copy=False)
+        obj_inds = self.ho_infos[idxs, 3].astype(np.int, copy=False)
+        is_obj_human = self.ho_infos[idxs, 4].astype(bool, copy=False)
 
         ppl_boxes = self.person_boxes[person_inds]
         ppl_feats = self.person_feats[person_inds]
@@ -462,9 +484,19 @@ class HoiInstancesFeatProvider(FeatProvider):
         kp_boxes = self.hake_kp_boxes[person_inds]
         kp_feats = self.hake_kp_feats[person_inds]
 
-        obj_boxes = self.obj_boxes[obj_inds]
-        obj_scores = self.obj_scores[obj_inds]
-        obj_feats = self.obj_feats[obj_inds]
+        obj_boxes = np.full((obj_inds.shape[0], self.obj_boxes.shape[1]), fill_value=np.nan)
+        obj_scores = np.full((obj_inds.shape[0], self.obj_scores.shape[1]), fill_value=np.nan)
+        obj_feats = np.full((obj_inds.shape[0], self.obj_feats.shape[1]), fill_value=np.nan)
+        # Object is human
+        obj_boxes[is_obj_human] = self.person_boxes[obj_inds[is_obj_human]]
+        _hum_obj_scores = self.person_scores[obj_inds[is_obj_human]]
+        obj_scores[is_obj_human, :] = (1 - _hum_obj_scores) / (obj_scores.shape[1] - 1)  # equally distributed among all the other classes
+        obj_scores[is_obj_human, self.wrapped_ds.full_dataset.human_class] = _hum_obj_scores
+        obj_feats[is_obj_human] = self.person_feats[obj_inds[is_obj_human]]
+        # Object is not human
+        obj_boxes[~is_obj_human] = self.obj_boxes[obj_inds[~is_obj_human]]
+        obj_scores[~is_obj_human] = self.obj_scores[obj_inds[~is_obj_human]]
+        obj_feats[~is_obj_human] = self.obj_feats[obj_inds[~is_obj_human]]
 
         t_ppl_boxes = torch.from_numpy(ppl_boxes).to(device=device)
         t_ppl_feats = torch.from_numpy(ppl_feats).to(device=device)
@@ -475,11 +507,16 @@ class HoiInstancesFeatProvider(FeatProvider):
         t_obj_scores = torch.from_numpy(obj_scores).to(device=device)
         t_obj_feats = torch.from_numpy(obj_feats).to(device=device)
 
+        if self.split != 'test':
+            act_labels = torch.tensor(self.action_labels[idxs, :], dtype=torch.float32, device=device)
+        else:
+            act_labels = None
+
         mb = Minibatch(ex_data=[ex_ids, feats],
                        im_data=[im_ids, im_feats, orig_img_wh],
                        person_data=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
                        obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
-                       ex_labels=None,
+                       ex_labels=act_labels,
                        pstate_labels=None,
                        other=[])
         if cfg.tin:

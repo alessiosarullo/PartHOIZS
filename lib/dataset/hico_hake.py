@@ -8,7 +8,7 @@ import torch
 from config import cfg
 from lib.dataset.hico import Hico
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, ImgInstancesFeatProvider
-from lib.dataset.utils import Splits, Dims, get_hico_to_coco_mapping
+from lib.dataset.utils import Dims, get_hico_to_coco_mapping
 from lib.timer import Timer
 
 
@@ -51,7 +51,7 @@ class HicoHakeKPSplit(HicoHakeSplit):
 
         mb = self._feat_provider.collate(idx_list, device)
         idxs = np.array(idx_list)
-        if self.split != Splits.TEST:
+        if self.split != 'test':
             img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
             pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
         else:

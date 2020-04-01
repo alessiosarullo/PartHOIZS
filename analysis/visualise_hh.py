@@ -28,7 +28,7 @@ from matplotlib import pyplot as plt
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub
 from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
-from lib.dataset.utils import Splits
+
 from lib.dataset.tin_utils import get_next_sp_with_pose
 import lib.utils
 
@@ -54,7 +54,7 @@ def get_args():
 
 def vis_hico_hake_kps():
     args = get_args()
-    split = Splits[args.split.upper()]
+    split = args.split
 
     folder = []
     if not args.no_bb:

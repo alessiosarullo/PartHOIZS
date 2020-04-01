@@ -8,7 +8,7 @@ import torch
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, HoiInstancesFeatProvider
-from lib.dataset.utils import Splits, HoiTripletsData, Dims
+from lib.dataset.utils import HoiTripletsData, Dims
 from lib.timer import Timer
 
 
@@ -29,7 +29,7 @@ class VCocoKPSplit(VCocoSplit):
     def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
         super().__init__(split, full_dataset, object_inds, action_inds)
         self._feat_provider = HoiInstancesFeatProvider(ds=self, ds_name='vcoco', no_feats=no_feats)
-        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._feat_provider.non_empty_imgs)
+        self.non_empty_inds = None  # not used, and it would be determined by the precomputed HOI assignment anyway.
 
     @property
     def dims(self) -> Dims:
@@ -37,19 +37,23 @@ class VCocoKPSplit(VCocoSplit):
         F_img = self._feat_provider.pc_img_feats.shape[1]
         F_kp = self._feat_provider.kp_net_dim
         F_obj = self._feat_provider.obj_feats_dim
-        return super().dims._replace(K_hake=K_hake, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+
+        # each example is an interaction, so 1 person and 1 object
+        return super().dims._replace(P=1, M=1, K_hake=K_hake, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+
+    def hold_out(self, ratio):
+        if cfg.no_filter_bg_only:
+            print('!!!!!!!!!! Filtering background-only images.')
+        num_examples = len(self._feat_provider.ho_infos)
+        example_ids = np.arange(num_examples)
+        num_examples_to_keep = num_examples - int(num_examples * ratio)
+        keep_inds = np.random.choice(example_ids, size=num_examples_to_keep, replace=False)
+        self.keep_inds = keep_inds
+        self.holdout_inds = np.setdiff1d(example_ids, keep_inds)
 
     def _collate(self, idx_list, device):
         Timer.get('GetBatch').tic()
-
         mb = self._feat_provider.collate(idx_list, device)
-        idxs = np.array(idx_list)
-        if self.split != Splits.TEST:
-            hoi_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            hoi_labels = None
-        mb = mb._replace(ex_labels=hoi_labels)
-
         Timer.get('GetBatch').toc(discard=5)
         return mb
 
@@ -64,15 +68,15 @@ class VCoco(HoiDataset):
         interactions = driver.interactions
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
 
-        self._split_det_data = {Splits.TRAIN: self.compute_annotations(split=Splits.TRAIN, driver=driver),
-                                Splits.TEST: self.compute_annotations(split=Splits.TEST, driver=driver),
-                                }  # type: Dict[Splits: HoiTripletsData]
-        self._split_filenames = {Splits.TRAIN: [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['train'].keys()],
-                                 Splits.TEST: [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['test'].keys()],
+        self._split_det_data = {'train': self.compute_annotations(split='train', driver=driver),
+                                'test': self.compute_annotations(split='test', driver=driver),
+                                }  # type: Dict[str: HoiTripletsData]
+        self._split_filenames = {'train': [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['train'].keys()],
+                                 'test': [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['test'].keys()],
                                  }
-        self._split_img_dims = {Splits.TRAIN: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
+        self._split_img_dims = {'train': [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
                                                for fid in driver.hoi_annotations_per_split['train'].keys()],
-                                Splits.TEST: [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
+                                'test': [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
                                               for fid in driver.hoi_annotations_per_split['test'].keys()]}
         self._img_dir = driver.img_dir
 
@@ -86,8 +90,8 @@ class VCoco(HoiDataset):
 
     @property
     def split_labels(self):
-        return {Splits.TRAIN: self._split_det_data[Splits.TRAIN].labels,
-                Splits.TEST: self._split_det_data[Splits.TEST].labels
+        return {'train': self._split_det_data['train'].labels,
+                'test': self._split_det_data['test'].labels
                 }
 
     def get_img_path(self, split, fname):
