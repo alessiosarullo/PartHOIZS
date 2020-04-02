@@ -66,7 +66,7 @@ def vis_vcoco():
         folder += ['pbbs']
     if not folder:
         folder = ['img']
-    save_dir = os.path.join('analysis', 'output', 'vis', 'gt', '_'.join(folder), split.value)
+    save_dir = os.path.join('analysis', 'output', 'vis', 'gt', '_'.join(folder), split)
     os.makedirs(save_dir, exist_ok=True)
 
     ds = VCoco()

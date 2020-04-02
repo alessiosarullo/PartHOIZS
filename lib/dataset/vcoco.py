@@ -101,7 +101,7 @@ class VCoco(HoiDataset):
 
     @staticmethod
     def compute_annotations(split, driver) -> HoiTripletsData:
-        hoi_annotations = driver.hoi_annotations_per_split[split.value]
+        hoi_annotations = driver.hoi_annotations_per_split[split]
         image_ids = list(hoi_annotations.keys())
         assert sorted(image_ids) == image_ids
         img_id_to_idx = {imid: i for i, imid in enumerate(image_ids)}

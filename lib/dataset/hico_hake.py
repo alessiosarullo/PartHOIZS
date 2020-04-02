@@ -106,7 +106,7 @@ class HicoHake(Hico):
         # Part annotations
         self.split_part_annotations = {}
         for split, fns in self.split_filenames.items():
-            part_anns = json.load(open(os.path.join(cfg.data_root, 'HICO', 'HAKE', f'{split.value}.json'), 'r'))  # type: Dict
+            part_anns = json.load(open(os.path.join(cfg.data_root, 'HICO', 'HAKE', f'{split}.json'), 'r'))  # type: Dict
             part_ann_list = [part_anns[k] for k in fns]  # There are two extra files in this split
             part_ann_vecs = np.stack([np.concatenate([pa[f'{p}_list'] for p in self.parts]) for pa in part_ann_list], axis=0)
             self.split_part_annotations[split] = part_ann_vecs

@@ -202,16 +202,16 @@ class FeatProvider:
         #####################################################
         # Image
         #####################################################
-        img_fn = cfg.precomputed_feats_format % (f'{ds_name}', 'resnet152', self.split.value)
+        img_fn = cfg.precomputed_feats_format % (f'{ds_name}', 'resnet152', self.split)
         self.pc_img_feats = PrecomputedFilesHandler.get(img_fn, 'img_feats', load_in_memory=True)
 
         #####################################################
         # Objects
         #####################################################
-        self.objects_fn = cfg.precomputed_feats_format % (f'{ds_name}objs', 'mask_rcnn_X_101_32x8d_FPN_3x', f'{self.split.value}')
+        self.objects_fn = cfg.precomputed_feats_format % (f'{ds_name}objs', 'mask_rcnn_X_101_32x8d_FPN_3x', f'{self.split}')
         if not os.path.isfile(self.objects_fn) and no_feats:
             self.objects_fn = cfg.precomputed_feats_format % (f'{ds_name}objs', 'mask_rcnn_X_101_32x8d_FPN_3x',
-                                                              f'{self.split.value}{"__nofeats" if no_feats else ""}')
+                                                              f'{self.split}{"__nofeats" if no_feats else ""}')
         self.obj_boxes = PrecomputedFilesHandler.get(self.objects_fn, 'boxes', load_in_memory=True)
         self.obj_scores = PrecomputedFilesHandler.get(self.objects_fn, 'box_scores', load_in_memory=True)
         if obj_mapping is not None:
@@ -225,10 +225,10 @@ class FeatProvider:
         #####################################################
         # People
         #####################################################
-        self.keypoints_fn = cfg.precomputed_feats_format % (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}')
+        self.keypoints_fn = cfg.precomputed_feats_format % (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split}')
         if not os.path.isfile(self.keypoints_fn) and no_feats:
             self.keypoints_fn = cfg.precomputed_feats_format % \
-                                (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split.value}{"__nofeats" if no_feats else ""}')
+                                (f'{ds_name}kps', 'keypoint_rcnn_R_101_FPN_3x', f'{self.split}{"__nofeats" if no_feats else ""}')
         self.person_boxes = PrecomputedFilesHandler.get(self.keypoints_fn, 'boxes', load_in_memory=True)
         self.coco_kps = PrecomputedFilesHandler.get(self.keypoints_fn, 'keypoints', load_in_memory=True)
         self.person_scores = PrecomputedFilesHandler.get(self.keypoints_fn, 'scores', load_in_memory=True)
@@ -414,7 +414,7 @@ class ImgInstancesFeatProvider(FeatProvider):
 class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, ds_name, *args, **kwargs):
         super().__init__(ds_name=ds_name, *args, **kwargs)
-        self.hoi_fn  = os.path.join(cfg.cache_root, f'precomputed_{ds_name}_hoi_assignment_file__{self.split.value}.h5')
+        self.hoi_fn  = os.path.join(cfg.cache_root, f'precomputed_{ds_name}_hoi_assignment_file__{self.split}.h5')
         ho_infos = PrecomputedFilesHandler.get(self.hoi_fn, 'ho_infos', load_in_memory=True)
 
         fname_ids_to_img_idx = {imdata['fname_id']: im_idx for im_idx, imdata in enumerate(self.img_data_cache)}

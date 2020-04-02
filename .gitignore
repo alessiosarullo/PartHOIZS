@@ -54,6 +54,7 @@ data
 
 # PyCharm
 *.idea
+.pycharm*
 
 ## General
 

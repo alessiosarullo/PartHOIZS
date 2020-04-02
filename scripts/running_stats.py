@@ -66,7 +66,7 @@ class RunningStats:
 
     @property
     def split_str(self):
-        return self.split.value.capitalize()
+        return self.split.capitalize()
 
     @property
     def epoch_str(self):
