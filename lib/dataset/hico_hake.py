@@ -3,18 +3,16 @@ import os
 from typing import Dict, List
 
 import numpy as np
-import torch
 
 from config import cfg
 from lib.dataset.hico import Hico
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, ImgInstancesFeatProvider
 from lib.dataset.utils import Dims, get_hico_to_coco_mapping
-from lib.timer import Timer
 
 
 class HicoHakeSplit(HoiDatasetSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
-        super().__init__(split, full_dataset, object_inds, action_inds)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.full_dataset = self.full_dataset  # type: HicoHake
         self.img_pstate_labels = self.full_dataset.split_part_annotations[self.split]
 
@@ -22,44 +20,21 @@ class HicoHakeSplit(HoiDatasetSplit):
     def instantiate_full_dataset(cls):
         return HicoHake()
 
+    def _init_feat_provider(self, **kwargs):
+        return ImgInstancesFeatProvider(ds=self, ds_name='hico', obj_mapping=get_hico_to_coco_mapping(self.full_dataset.objects), **kwargs)
+
     @property
     def dims(self) -> Dims:
+        dims = super().dims
         K_hake = self.full_dataset.num_keypoints
         B, S = self.full_dataset.num_parts, self.full_dataset.num_part_states
-        return super().dims._replace(K_hake=K_hake, B=B, S=S)
-
-    def _collate(self, idx_list, device):
-        raise NotImplementedError
-
-
-class HicoHakeKPSplit(HicoHakeSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self._feat_provider = ImgInstancesFeatProvider(ds=self, ds_name='hico', no_feats=no_feats,
-                                                       obj_mapping=get_hico_to_coco_mapping(self.full_dataset.objects))
-        self.non_empty_inds = np.intersect1d(self.non_empty_inds, self._feat_provider.non_empty_imgs)
-
-    @property
-    def dims(self) -> Dims:
-        F_img = self._feat_provider.pc_img_feats.shape[1]
-        F_kp = self._feat_provider.kp_net_dim
-        F_obj = self._feat_provider.obj_feats_dim
-        return super().dims._replace(F_img=F_img, F_kp=F_kp, F_obj=F_obj)
-
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-
-        mb = self._feat_provider.collate(idx_list, device)
-        idxs = np.array(idx_list)
-        if self.split != 'test':
-            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            pstate_labels = torch.tensor(self.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
-        else:
-            img_labels = pstate_labels = None
-        mb = mb._replace(ex_labels=img_labels, pstate_labels=pstate_labels)
-
-        Timer.get('GetBatch').toc(discard=5)
-        return mb
+        dims = dims._replace(K_hake=K_hake, B=B, S=S)
+        if self._feat_provider is not None:
+            F_img = self._feat_provider.pc_img_feats.shape[1]
+            F_kp = self._feat_provider.kp_net_dim
+            F_obj = self._feat_provider.obj_feats_dim
+            dims = dims._replace(F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+        return dims
 
 
 class HicoHake(Hico):
@@ -105,7 +80,8 @@ class HicoHake(Hico):
 
         # Part annotations
         self.split_part_annotations = {}
-        for split, fns in self.split_filenames.items():
+        for split in ['train', 'test']:
+            fns = self.split_filenames[split]
             part_anns = json.load(open(os.path.join(cfg.data_root, 'HICO', 'HAKE', f'{split}.json'), 'r'))  # type: Dict
             part_ann_list = [part_anns[k] for k in fns]  # There are two extra files in this split
             part_ann_vecs = np.stack([np.concatenate([pa[f'{p}_list'] for p in self.parts]) for pa in part_ann_list], axis=0)

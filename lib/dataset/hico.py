@@ -1,6 +1,6 @@
 import os
 import pickle
-from typing import Dict
+from typing import Dict, List
 
 import imagesize
 import numpy as np
@@ -8,26 +8,11 @@ from PIL import Image, ImageOps
 from scipy.io import loadmat
 
 from config import cfg
-from lib.dataset.hoi_dataset import HoiDataset
-from lib.dataset.hoi_dataset_split import HoiDatasetSplit
-from lib.dataset.utils import HoiTripletsData
-
-
-class HicoSplit(HoiDatasetSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self.full_dataset = self.full_dataset  # type: Hico
-
-    @classmethod
-    def instantiate_full_dataset(cls) -> HoiDataset:
-        return Hico()
-
-    def _collate(self, idx_list, device):
-        raise NotImplementedError
+from lib.dataset.hoi_dataset import HoiDataset, GTImgData
 
 
 class Hico(HoiDataset):
-    def __init__(self, hicodet=False):
+    def __init__(self):
         driver = HicoDriver()  # type: HicoDriver
 
         object_classes = sorted(set([inter['obj'] for inter in driver.interaction_list]))
@@ -45,86 +30,19 @@ class Hico(HoiDataset):
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action,
                          interactions_classes=interactions_classes)
-        self._split_filenames = driver.split_filenames
-        self._split_labels = annotations_per_split
+        self.split_filenames = driver.split_filenames
+        self.split_labels = annotations_per_split
         self.split_img_dir = driver.split_img_dir
-        self._split_img_dims = driver.split_img_dims  # (w, h)
+        self.split_img_dims = driver.split_img_dims  # (w, h)
+        self._img_data_per_split = {s: [GTImgData(filename=fn, img_size=dims, labels=l)
+                                        for fn, dims, l in zip(self.split_filenames[s], self.split_img_dims[s], self.split_labels[s])]
+                                    for s in ['train', 'test']}  # type: Dict[str, List[GTImgData]]
 
-        # Detection
-        if hicodet:
-            det_driver = HicoDetDriver()
-            self._split_det_data = {'train': self.compute_annotations(split='train', det_driver=det_driver),
-                                    'test': self.compute_annotations(split='test', det_driver=det_driver),
-                                    }  # type: Dict[str: HoiTripletsData]
-
-    @property
-    def split_filenames(self):
-        return self._split_filenames
-
-    @property
-    def split_img_dims(self):
-        return self._split_img_dims
-
-    @property
-    def split_labels(self):
-        return self._split_labels
+    def get_img_data(self, split) -> List[GTImgData]:
+        return self._img_data_per_split[split]
 
     def get_img_path(self, split, fname):
         return os.path.join(self.split_img_dir[split], fname)
-
-    def compute_annotations(self, split, det_driver) -> HoiTripletsData:
-        annotations = det_driver.split_annotations[split if split == 'test' else 'train']
-
-        # There's a discrepancy between HICO's and HICO-DET's training sets: 38116 files vs 38118. 
-        split_fnames = set(self.split_filenames[split])
-        annotations = [ann for ann in annotations if ann['file'] in split_fnames]
-
-        boxes = []  # each is (image_idx, x1, y1, x2, y2, class)
-        ho_pairs = []  # each is (image_idx, hum_idx, obj_idx)
-        labels = []
-        fnames = []
-        curr_num_boxes = 0
-        for i, img_ann in enumerate(annotations):
-            for inter in img_ann['interactions']:
-                inter_id = inter['id']
-                if not inter['invis']:
-                    # Human
-                    im_hum_boxes = inter['hum_bbox']
-                    H = im_hum_boxes.shape[0]
-                    hum_box_ids = curr_num_boxes + np.arange(H)
-                    boxes.append(np.concatenate([np.full((H, 1), fill_value=i),
-                                                 im_hum_boxes,
-                                                 np.full((H, 1), fill_value=self.human_class)
-                                                 ], axis=1))
-                    curr_num_boxes += H
-
-                    im_obj_boxes = inter['obj_bbox']
-                    O = im_obj_boxes.shape[0]
-                    obj_box_ids = curr_num_boxes + np.arange(O)
-                    boxes.append(np.concatenate([np.full((O, 1), fill_value=i),
-                                                 im_obj_boxes,
-                                                 np.full((O, 1), fill_value=self.interactions[inter_id, 1])
-                                                 ], axis=1))
-                    curr_num_boxes += O
-
-                    # Interaction
-                    new_inters = inter['conn']
-                    I = new_inters.shape[0]
-                    new_inters = np.stack([np.full(I, fill_value=i, dtype=np.int),
-                                           hum_box_ids[new_inters[:, 0]],
-                                           obj_box_ids[new_inters[:, 1]],
-                                           ], axis=1)
-                    ho_pairs.append(new_inters)
-
-                    im_labels_onehot = np.zeros((I, self.num_interactions))
-                    im_labels_onehot[np.arange(I), inter_id] = 1
-                    labels.append(im_labels_onehot)
-                    fnames.append(img_ann['file'])
-
-        boxes = np.concatenate(boxes, axis=0)
-        ho_pairs = np.concatenate(ho_pairs, axis=0)
-        labels = np.concatenate(labels, axis=0)
-        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=labels, fnames=fnames)
 
 
 class HicoDriver:
@@ -361,7 +279,7 @@ class HicoDetDriver:
         def _parse_split(_split):
             # The many "-1"s are due to original values being suited for MATLAB.
             _annotations = []
-            for _src_ann in src_anns['bbox_%s' % _split.value]:
+            for _src_ann in src_anns['bbox_%s' % _split]:
                 _ann = {'file': _src_ann[0],
                         'orig_img_size': np.array([int(_src_ann[1][field]) for field in ['width', 'height', 'depth']], dtype=np.int),
                         'interactions': []}
@@ -477,5 +395,5 @@ class HicoDetDriver:
 
 
 if __name__ == '__main__':
-    h = Hico(hicodet=True)
+    h = Hico()
     print('Done.')

@@ -25,8 +25,12 @@ class AbstractModel(nn.Module):
 class Prediction:
     def __init__(self, prediction_dict=None):
         self.part_state_scores = None  # type: Union[None, np.ndarray]
-        self.hoi_scores = None  # type: Union[None, np.ndarray]
+
         self.obj_scores = None  # type: Union[None, np.ndarray]
+        self.obj_boxes = None  # type: Union[None, np.ndarray]
+
+        self.ho_pairs = None  # type: Union[None, np.ndarray]
+        self.hoi_scores = None  # type: Union[None, np.ndarray]
 
         if prediction_dict is not None:
             # try:

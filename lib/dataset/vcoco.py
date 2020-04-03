@@ -1,61 +1,40 @@
 import json
 import os
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
-import torch
 
 from config import cfg
-from lib.dataset.hoi_dataset import HoiDataset
+from lib.dataset.hoi_dataset import HoiDataset, GTImgData
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, HoiInstancesFeatProvider
-from lib.dataset.utils import HoiTripletsData, Dims
-from lib.timer import Timer
+from lib.dataset.utils import Dims
 
 
 class VCocoSplit(HoiDatasetSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None):
-        super().__init__(split, full_dataset, object_inds, action_inds, labels_are_actions=True)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.full_dataset = self.full_dataset  # type: VCoco
 
     @classmethod
     def instantiate_full_dataset(cls):
         return VCoco()
 
-    def _collate(self, idx_list, device):
-        raise NotImplementedError
-
-
-class VCocoKPSplit(VCocoSplit):
-    def __init__(self, split, full_dataset, object_inds=None, action_inds=None, no_feats=False):
-        super().__init__(split, full_dataset, object_inds, action_inds)
-        self._feat_provider = HoiInstancesFeatProvider(ds=self, ds_name='vcoco', no_feats=no_feats)
-        self.non_empty_inds = None  # not used, and it would be determined by the precomputed HOI assignment anyway.
+    def _init_feat_provider(self, **kwargs):
+        return HoiInstancesFeatProvider(ds=self, ds_name='vcoco', labels_are_actions=True,
+                                        obj_mapping=np.arange(1, self.full_dataset.num_objects + 1),
+                                        **kwargs)
 
     @property
     def dims(self) -> Dims:
-        K_hake = self._feat_provider.hake_kp_boxes.shape[1]
-        F_img = self._feat_provider.pc_img_feats.shape[1]
-        F_kp = self._feat_provider.kp_net_dim
-        F_obj = self._feat_provider.obj_feats_dim
-
-        # each example is an interaction, so 1 person and 1 object
-        return super().dims._replace(P=1, M=1, K_hake=K_hake, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
-
-    def hold_out(self, ratio):
-        if cfg.no_filter_bg_only:
-            print('!!!!!!!!!! Filtering background-only images.')
-        num_examples = len(self._feat_provider.ho_infos)
-        example_ids = np.arange(num_examples)
-        num_examples_to_keep = num_examples - int(num_examples * ratio)
-        keep_inds = np.random.choice(example_ids, size=num_examples_to_keep, replace=False)
-        self.keep_inds = keep_inds
-        self.holdout_inds = np.setdiff1d(example_ids, keep_inds)
-
-    def _collate(self, idx_list, device):
-        Timer.get('GetBatch').tic()
-        mb = self._feat_provider.collate(idx_list, device)
-        Timer.get('GetBatch').toc(discard=5)
-        return mb
+        dims = super().dims
+        dims = dims._replace(P=1, M=1)  # each example is an interaction, so 1 person and 1 object
+        if self._feat_provider is not None:
+            K_hake = self._feat_provider.hake_kp_boxes.shape[1]
+            F_img = self._feat_provider.pc_img_feats.shape[1]
+            F_kp = self._feat_provider.kp_net_dim
+            F_obj = self._feat_provider.obj_feats_dim
+            dims = dims._replace(K_hake=K_hake, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+        return dims
 
 
 class VCoco(HoiDataset):
@@ -68,64 +47,45 @@ class VCoco(HoiDataset):
         interactions = driver.interactions
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
 
-        self._split_det_data = {'train': self.compute_annotations(split='train', driver=driver),
-                                'test': self.compute_annotations(split='test', driver=driver),
-                                }  # type: Dict[str: HoiTripletsData]
-        self._split_filenames = {'train': [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['train'].keys()],
-                                 'test': [driver.image_infos[fid]['file_name'] for fid in driver.hoi_annotations_per_split['test'].keys()],
-                                 }
-        self._split_img_dims = {'train': [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
-                                               for fid in driver.hoi_annotations_per_split['train'].keys()],
-                                'test': [(driver.image_infos[fid]['width'], driver.image_infos[fid]['height'])
-                                              for fid in driver.hoi_annotations_per_split['test'].keys()]}
+        self._split_gt_data = {'train': self.compute_img_data(split='train', driver=driver),
+                               'test': self.compute_img_data(split='test', driver=driver),
+                               }  # type: Dict[str, List[GTImgData]]
         self._img_dir = driver.img_dir
 
-    @property
-    def split_filenames(self):
-        return self._split_filenames
-
-    @property
-    def split_img_dims(self):
-        return self._split_img_dims
-
-    @property
-    def split_labels(self):
-        return {'train': self._split_det_data['train'].labels,
-                'test': self._split_det_data['test'].labels
-                }
+    def get_img_data(self, split):
+        return self._split_gt_data[split]
 
     def get_img_path(self, split, fname):
         split = fname.split('_')[-2]
         assert split in ['train2014', 'val2014', 'test2014'], split
         return os.path.join(self._img_dir, split, fname)
 
-    @staticmethod
-    def compute_annotations(split, driver) -> HoiTripletsData:
+    def compute_img_data(self, split, driver) -> List[GTImgData]:
+        driver = driver  # type: VCocoDriver
         hoi_annotations = driver.hoi_annotations_per_split[split]
         image_ids = list(hoi_annotations.keys())
         assert sorted(image_ids) == image_ids
-        img_id_to_idx = {imid: i for i, imid in enumerate(image_ids)}
-        image_ids_set = set(image_ids)
 
-        obj_id_to_idx = {}
-        all_obj_annotations = driver.object_annotations
-        boxes = []  # each is (image_idx, x1, y1, x2, y2, class)
-        for obj_id, obj_ann in all_obj_annotations.items():
-            if obj_ann['image_id'] in image_ids_set:  # belongs to this split
-                assert obj_id not in obj_id_to_idx
-                obj_id_to_idx[obj_id] = len(boxes)
-                boxes.append(np.array([img_id_to_idx[obj_ann['image_id']],
-                                       *obj_ann['bbox'],
-                                       obj_ann['obj']
-                                       ]))
-        boxes = np.stack(boxes, axis=0)
+        split_data = []
+        for img_id, img_anns in hoi_annotations.items():
+            im_boxes = []
+            im_box_classes = []
+            im_ho_pairs = []
+            im_actions = []
+            box_ids_to_idx = {}
+            for ann in img_anns:
+                hum_id = ann['ann_id']
+                hum_box = driver.object_annotations[hum_id]['bbox']
+                hum_class = driver.object_annotations[hum_id]['obj']
+                assert hum_class == self.human_class
+                if hum_id not in box_ids_to_idx:
+                    box_ids_to_idx[hum_id] = len(im_boxes)
+                    im_boxes.append(hum_box)
+                    im_box_classes.append(hum_class)
+                hum_idx_in_img = box_ids_to_idx[hum_id]
 
-        ho_pairs = []  # each is (image_idx, hum_idx, obj_idx)
-        labels = []  # actions, not interactions
-        fnames = []
-        for i, (imid, im_annotations) in enumerate(hoi_annotations.items()):
-            for ann in im_annotations:
                 act_id = ann['action']
+
                 num_roles = len(driver.interaction_class_data[act_id]['role_name'])
                 if num_roles == 1:
                     obj_id = -1
@@ -137,19 +97,32 @@ class VCoco(HoiDataset):
                     obj_id = ann['role_object_id'][role_id]
                 else:
                     raise ValueError(f'Too many roles: {num_roles}.')
-                obj_idx = obj_id_to_idx.get(obj_id, np.nan)
-                ho_pairs.append(np.array([img_id_to_idx[imid],
-                                          obj_id_to_idx[ann['ann_id']],
-                                          obj_idx
-                                          ]))
-                labels.append(act_id)
-                fnames.append(driver.image_infos[imid]['file_name'])
-        ho_pairs = np.stack(ho_pairs, axis=0)
-        # TODO? These pairs are not unique
-        labels = np.array(labels)
-        onehot_labels = np.zeros((labels.size, len(driver.actions)))
-        onehot_labels[np.arange(labels.size), labels] = 1
-        return HoiTripletsData(boxes=boxes, ho_pairs=ho_pairs, labels=onehot_labels, fnames=fnames)
+                if obj_id > 0:
+                    obj_box = driver.object_annotations[obj_id]['bbox']
+                    obj_class = driver.object_annotations[obj_id]['obj']
+                    if obj_id not in box_ids_to_idx:
+                        box_ids_to_idx[obj_id] = len(im_boxes)
+                        im_boxes.append(obj_box)
+                        im_box_classes.append(obj_class)
+                    obj_idx_in_img = box_ids_to_idx[obj_id]
+                else:
+                    obj_idx_in_img = np.nan
+
+                im_ho_pairs.append(np.array([hum_idx_in_img, obj_idx_in_img]))
+                im_actions.append(act_id)
+
+            im_boxes = np.stack(im_boxes, axis=0)
+            im_box_classes = np.array(im_box_classes)
+            im_ho_pairs = np.stack(im_ho_pairs, axis=0)
+            im_actions = np.array(im_actions)
+            im_actions_one_hot = np.zeros((im_actions.shape[0], self.num_actions))
+            im_actions_one_hot[np.arange(im_actions.shape[0]), im_actions] = 1
+
+            split_data.append(GTImgData(filename=driver.image_infos[img_id]['file_name'],
+                                        img_size=np.array([driver.image_infos[img_id]['width'], driver.image_infos[img_id]['height']]),
+                                        boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_actions_one_hot))
+
+        return split_data
 
 
 class VCocoDriver:

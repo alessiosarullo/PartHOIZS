@@ -1,6 +1,16 @@
 import os
+from typing import List, NamedTuple, Union
 
 import numpy as np
+
+
+class GTImgData(NamedTuple):
+    filename: str
+    img_size: np.ndarray  # width, height
+    labels: np.ndarray  # one-hot encoded
+    boxes: Union[None, np.ndarray] = None
+    box_classes: Union[None, np.ndarray] = None
+    ho_pairs: Union[None, np.ndarray] = None  # hum_idx, obj_idx
 
 
 class HoiDataset:
@@ -25,17 +35,14 @@ class HoiDataset:
         self.oa_pair_to_interaction = np.full([self.num_objects, self.num_actions], fill_value=-1, dtype=np.int)
         self.oa_pair_to_interaction[self.interactions[:, 1], self.interactions[:, 0]] = np.arange(self.num_interactions)
 
-    @property
-    def split_filenames(self):
+    def get_img_data(self, split) -> List[GTImgData]:
         raise NotImplementedError
 
-    @property
-    def split_img_dims(self):
+    def get_img_path(self, split, fname):
         raise NotImplementedError
 
-    @property
-    def split_labels(self):
-        raise NotImplementedError
+    def get_fname_id(self, fname) -> int:
+        return int(os.path.splitext(fname)[0].split('_')[-1])
 
     @property
     def human_class(self) -> int:
@@ -68,9 +75,3 @@ class HoiDataset:
         interactions_to_act = np.zeros((self.num_interactions, self.num_actions))
         interactions_to_act[np.arange(self.num_interactions), self.interactions[:, 0]] = 1
         return interactions_to_act
-
-    def get_img_path(self, split, fname):
-        raise NotImplementedError
-
-    def get_fname_id(self, fname) -> int:
-        return int(os.path.splitext(fname)[0].split('_')[-1])

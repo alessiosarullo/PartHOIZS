@@ -5,8 +5,9 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit
-from lib.dataset.utils import interactions_to_mat, Minibatch
+from lib.dataset.hico_hake import HicoHakeSplit
+from lib.dataset.utils import interactions_to_mat
+from lib.dataset.hoi_dataset_split import Labels, Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.misc import bce_loss, LIS, MemoryEfficientSwish as Swish
 
@@ -38,9 +39,9 @@ class Cache:
 
 
 class AbstractModule(nn.Module):
-    def __init__(self, dataset: HicoHakeKPSplit, cache: Cache, repr_dim, **kwargs):
+    def __init__(self, dataset: HicoHakeSplit, cache: Cache, repr_dim, **kwargs):
         super().__init__()
-        self.dataset = dataset  # type: HicoHakeKPSplit
+        self.dataset = dataset  # type: HicoHakeSplit
         self.dims = self.dataset.dims
         self.cache = cache
         self.repr_dim = repr_dim
@@ -255,7 +256,7 @@ class PartUninteractivenessBranch(SpatialConfigurationBranch):
         return np.array([states[-1] for states in self.dataset.full_dataset.states_per_part])  # null part states
 
     def _get_losses(self, x: Minibatch, output, **kwargs):
-        labels = x.pstate_labels[:, self.label_inds]
+        labels = x.labels.pstate[:, self.label_inds]
         losses = {f'part_bg_loss': bce_loss(output, labels)}
         return losses
 
@@ -286,7 +287,7 @@ class PartStateBranch(AbstractBranch):
 
     def _get_losses(self, x: Minibatch, output, **kwargs):
         hh = self.dataset.full_dataset
-        orig_part_state_labels = x.pstate_labels
+        orig_part_state_labels = x.labels.pstate
         part_dir_logits = output
         bg_part_states = torch.from_numpy(np.array([app[-1] for app in hh.states_per_part])).to(device=part_dir_logits.device)
         fg_part_states = torch.from_numpy(np.concatenate([app[:-1] for app in hh.states_per_part])).to(device=part_dir_logits.device)
@@ -417,16 +418,15 @@ class ZSBranch(AbstractBranch):
     def _get_train_seen_inds(self):
         if self.zs_enabled:
             train_seen_inds = self.seen_inds
+            if not cfg.train_null_act:
+                if self.ld.tag == 'hoi':
+                    fg_interactions = np.flatnonzero(self.dataset.full_dataset.interactions[:, 0] > 0)
+                    train_seen_inds = nn.Parameter(torch.from_numpy(np.intersect1d(self.ld.seen_classes, fg_interactions)), requires_grad=False)
+                    assert len(train_seen_inds) == self.dataset.num_interactions - self.dims.O  # #seen - #objects
+                elif self.ld.tag == 'act':
+                    train_seen_inds = nn.Parameter(train_seen_inds[1:], requires_grad=False)
         else:
             train_seen_inds = None
-
-        if not cfg.train_null_act:
-            if self.ld.tag == 'hoi':
-                fg_interactions = np.flatnonzero(self.dataset.full_dataset.interactions[:, 0] > 0)
-                train_seen_inds = nn.Parameter(torch.from_numpy(np.intersect1d(self.ld.seen_classes, fg_interactions)), requires_grad=False)
-                assert len(train_seen_inds) == self.dataset.num_interactions - self.dims.O  # #seen - #objects
-            elif self.ld.tag == 'act':
-                train_seen_inds = nn.Parameter(train_seen_inds[1:], requires_grad=False)
 
         return train_seen_inds
 
@@ -436,7 +436,8 @@ class ZSBranch(AbstractBranch):
             return LabelData(tag=label_type,
                              seen_classes=self.dataset.seen_objects,
                              unseen_classes=np.setdiff1d(np.arange(self.dims.O), self.dataset.seen_objects),
-                             label_f=lambda hoi_labels: (hoi_labels @ label_trasf_mat.to(hoi_labels)).clamp(min=0, max=1).detach(),
+                             label_f=lambda labels: labels.obj if labels.obj is not None else
+                             (labels.hoi @ label_trasf_mat.to(labels.hoi)).clamp(min=0, max=1).detach(),
                              num_classes=self.dims.O,
                              all_classes_str=self.dataset.full_dataset.objects)
         elif label_type == 'act':
@@ -444,14 +445,15 @@ class ZSBranch(AbstractBranch):
             return LabelData(tag='act',
                              seen_classes=self.dataset.seen_actions,
                              unseen_classes=np.setdiff1d(np.arange(self.dims.A), self.dataset.seen_actions),
-                             label_f=lambda hoi_labels: (hoi_labels @ label_trasf_mat.to(hoi_labels)).clamp(min=0, max=1).detach(),
+                             label_f=lambda labels: labels.act if labels.act is not None else
+                             (labels.hoi @ label_trasf_mat.to(labels.hoi)).clamp(min=0, max=1).detach(),
                              num_classes=self.dims.A,
                              all_classes_str=self.dataset.full_dataset.actions)
         elif label_type == 'hoi':
             return LabelData(tag='hoi',
                              seen_classes=self.dataset.seen_interactions,
                              unseen_classes=np.setdiff1d(np.arange(self.dims.C), self.dataset.seen_interactions),
-                             label_f=lambda hoi_labels: hoi_labels.clamp(min=0, max=1).detach(),
+                             label_f=lambda labels: labels.hoi.clamp(min=0, max=1).detach(),
                              num_classes=self.dims.C,
                              all_classes_str=self.dataset.full_dataset.interactions_str)
         else:
@@ -461,9 +463,8 @@ class ZSBranch(AbstractBranch):
         pass
 
     def _get_losses(self, x: Minibatch, output, **kwargs):
-        interaction_labels = x.ex_labels
         dir_logits, zs_logits = output
-        labels = self.ld.label_f(interaction_labels)
+        labels = self.ld.label_f(x.labels)
         assert dir_logits.shape[1] == labels.shape[1]
         train_seen_inds = self.train_seen_inds
         if self.zs_enabled:
@@ -472,7 +473,7 @@ class ZSBranch(AbstractBranch):
             losses = {f'{self.ld.tag}_loss_seen': bce_loss(dir_logits[:, train_seen_inds], labels[:, train_seen_inds]) +
                                                   bce_loss(zs_logits[:, train_seen_inds], labels[:, train_seen_inds])}
             if self.unseen_loss_coeff > 0:
-                unseen_class_labels = self.get_unseen_labels(interaction_labels)
+                unseen_class_labels = self.get_unseen_labels(x.labels.hoi)
                 losses[f'{self.ld.tag}_loss_unseen'] = self.unseen_loss_coeff * bce_loss(zs_logits[:, self.unseen_inds], unseen_class_labels)
         else:
             if train_seen_inds is not None:

@@ -6,15 +6,15 @@ from sklearn.metrics import average_precision_score
 
 from config import cfg
 from lib.models.abstract_model import Prediction
-from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.hico_hake import HicoHakeSplit
 from lib.eval.eval_utils import MetricFormatter, sort_and_filter
 from lib.timer import Timer
 
 
-class PartEvaluatorImg:
-    def __init__(self, dataset_split: HicoHakeKPSplit):
+class PartEvaluatorHH:
+    def __init__(self, dataset_split: HicoHakeSplit):
         super().__init__()
-        self.dataset_split = dataset_split  # type: HicoHakeKPSplit
+        self.dataset_split = dataset_split  # type: HicoHakeSplit
         self.full_dataset = dataset_split.full_dataset
         self.metrics = {}  # type: Dict[str, np.ndarray]
 

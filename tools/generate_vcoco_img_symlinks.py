@@ -14,7 +14,8 @@ def main():
     os.makedirs(dst_folder)
 
     vcoco = VCoco()
-    for fnames in vcoco.split_filenames.values():
+    for _split in ['train', 'test']:
+        fnames = [gtd.filename for gtd in vcoco.get_img_data(_split)]
         for i, fn in enumerate(fnames):
             if i % 100 == 0:
                 print(f'{i + 1}/{len(fnames)}.')

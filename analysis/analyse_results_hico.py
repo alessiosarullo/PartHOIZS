@@ -35,7 +35,7 @@ from PIL import Image
 
 from config import cfg
 from lib.models.abstract_model import Prediction
-from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.hico_hake import HicoHakeSplit
 from lib.dataset.utils import interactions_to_mat
 from lib.dataset.hico_hake import HicoHake
 from analysis.visualise_utils import Visualizer
@@ -44,14 +44,14 @@ from analysis.show_embs import run_and_save
 
 
 class Analyser:
-    def __init__(self, dataset: HicoHakeKPSplit, hoi_score_thr):
+    def __init__(self, dataset: HicoHakeSplit, hoi_score_thr):
         super().__init__()
 
         self.hoi_score_thr = hoi_score_thr
         print(f'Thr score: {hoi_score_thr}')
 
-        self.dataset_split = dataset  # type: HicoHakeKPSplit
-        self.full_dataset = dataset.full_dataset
+        self.dataset_split = dataset  # type: HicoHakeSplit
+        self.full_dataset = self.dataset_split.full_dataset
 
         # self.ph_num_bins = 20
         # self.ph_bins = np.arange(self.ph_num_bins + 1) / self.ph_num_bins
@@ -116,7 +116,7 @@ def stats():
     seen_obj_inds = inds_dict['train']['obj']
 
     hh = HicoHake()
-    test_split = HicoHakeKPSplit(split='test', full_dataset=hh, no_feats=True)
+    test_split = HicoHakeSplit(split='test', full_dataset=hh)
     analyser = Analyser(dataset=test_split, hoi_score_thr=args.hoi_thr)
 
     def _hoi_labels_to_act_labels(hoi_labels):
@@ -195,6 +195,7 @@ def print_predictions():
 
     gt_part_action_labels = hh.split_part_annotations[res_split]
     gt_part_action_labels[gt_part_action_labels < 0] = 0
+    gt_labels = hh.split_labels[res_split]
 
     n = args.num_imgs
     all_inds = list(range(n if n > 0 else len(hds_fns)))
@@ -214,7 +215,7 @@ def print_predictions():
         print(f'{img_id:5d}')
         # Objects
         if prediction.obj_scores is not None:
-            obj_anns = (hh.split_labels[res_split][idx, :] @ hh.interaction_to_object_mat) > 0
+            obj_anns = (gt_labels[idx, :] @ hh.interaction_to_object_mat) > 0
             obj_scores = np.squeeze(prediction.obj_scores, axis=0)
             inds = obj_scores.argsort()[::-1]
             obj_pred_str = []
@@ -231,7 +232,7 @@ def print_predictions():
                 print(f'{"":5s} {"":10s} MISS {", ".join(obj_misses_str)}')
 
         # Interactions
-        hoi_anns = (hh.split_labels[res_split][idx, :] > 0)
+        hoi_anns = (gt_labels[idx, :] > 0)
         hoi_scores = np.squeeze(prediction.hoi_scores, axis=0)
         inds = hoi_scores.argsort()[::-1]
         hoi_pred_str = []

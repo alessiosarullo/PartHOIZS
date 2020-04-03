@@ -3,14 +3,14 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit
-from lib.dataset.utils import Minibatch
+from lib.dataset.hico_hake import HicoHakeSplit
+from lib.dataset.hoi_dataset_split import Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, \
     ZSGCBranch, \
     PartStateBranch, FrozenPartStateBranch
-from lib.models.gcns import HoiGCN
+from lib.models.gcns import HoiGCN, BipartiteGCN
 
 
 class AbstractTriBranchModel(AbstractModel):
@@ -18,7 +18,7 @@ class AbstractTriBranchModel(AbstractModel):
     def get_cline_name(cls) -> str:
         raise NotImplementedError
 
-    def __init__(self, dataset: HicoHakeKPSplit, part_only=False, **kwargs):
+    def __init__(self, dataset: HicoHakeSplit, part_only=False, **kwargs):
         super().__init__(dataset, **kwargs)
         assert not (cfg.no_part and part_only)
         self.dataset = dataset
@@ -102,6 +102,11 @@ class AbstractTriBranchModel(AbstractModel):
 
             assert hoi_scores
             prediction.hoi_scores = np.prod(np.stack(hoi_scores, axis=0), axis=0)
+
+            if len(x.ex_data) > 2:
+                prediction.obj_boxes = x.ex_data[2]
+                prediction.ho_pairs = x.ex_data[3]
+                assert prediction.ho_pairs.shape[0] == prediction.hoi_scores.shape[0]
         return prediction
 
     def _forward(self, x: Minibatch, inference=True):
@@ -113,8 +118,37 @@ class PartModel(AbstractTriBranchModel):
     def get_cline_name(cls):
         return 'part'
 
-    def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
+    def __init__(self, dataset: HicoHakeSplit, **kwargs):
         super().__init__(dataset, part_only=True, **kwargs)
+
+
+class ActModel(AbstractTriBranchModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'act'
+
+    def __init__(self, dataset: HicoHakeSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+
+    def _init_act_branch(self):
+        self.branches['act'] = ZSGCBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
+
+    def _init_gcn(self):
+        interactions = self.dataset.full_dataset.interactions  # FIXME only "oracle" is supported ATM, even for zero-shot
+        oa_adj = np.zeros([self.dataset.dims.O, self.dataset.dims.A], dtype=np.float32)
+        oa_adj[interactions[:, 1], interactions[:, 0]] = 1
+        oa_adj[:, 0] = 0
+        oa_adj = torch.from_numpy(oa_adj)
+        self.cache['oa_adj'] = oa_adj
+
+        gc_latent_dim = cfg.gcldim
+        gc_emb_dim = cfg.gcrdim
+        gc_dims = ((gc_emb_dim + gc_latent_dim) // 2, gc_latent_dim)
+        self.hoi_gcn = BipartiteGCN(adj_block=oa_adj, input_dim=gc_emb_dim, gc_dims=gc_dims)
+
+    def _forward(self, x: Minibatch, inference=True):
+        if self.zs_enabled:
+            self.cache['oa_gcn_obj_class_embs'], self.cache['oa_gcn_act_class_embs'] = self.hoi_gcn()
 
 
 class HoiModel(AbstractTriBranchModel):
@@ -122,7 +156,7 @@ class HoiModel(AbstractTriBranchModel):
     def get_cline_name(cls):
         return 'hoi'
 
-    def __init__(self, dataset: HicoHakeKPSplit, **kwargs):
+    def __init__(self, dataset: HicoHakeSplit, **kwargs):
         super().__init__(dataset, **kwargs)
 
     def _init_hoi_branch(self):

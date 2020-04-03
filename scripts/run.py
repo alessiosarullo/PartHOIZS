@@ -11,11 +11,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit
+from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 
-from lib.dataset.vcoco import VCocoKPSplit
-from lib.eval.evaluator_img import EvaluatorImg
-from lib.eval.part_evaluator_img import PartEvaluatorImg
+from lib.dataset.hico_hake import HicoHakeSplit
+from lib.dataset.vcoco import VCocoSplit
+from lib.eval.evaluator_hico import EvaluatorHico
+from lib.eval.evaluator_roi import EvaluatorROI
+from lib.eval.part_evaluator_hh import PartEvaluatorHH
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.radam import RAdam
 from lib.timer import Timer
@@ -43,8 +45,8 @@ class Launcher:
             cfg.load()
         cfg.print()
         self.detector = None  # type: Union[None, AbstractModel]
-        self.train_split = None  # type: Union[None, HicoHakeKPSplit]
-        self.test_split = None  # type: Union[None, HicoHakeKPSplit]
+        self.train_split = None  # type: Union[None, HoiDatasetSplit]
+        self.test_split = None  # type: Union[None, HoiDatasetSplit]
         self.curr_train_iter = 0
         self.start_epoch = 0
 
@@ -95,11 +97,12 @@ class Launcher:
                     pass
 
         if cfg.ds == 'hh':
-            splits = HicoHakeKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+            ds_class = HicoHakeSplit
         elif cfg.ds == 'vcoco':
-            splits = VCocoKPSplit.get_splits(obj_inds=inds['obj'], act_inds=inds['act'])
+            ds_class = VCocoSplit
         else:
             raise ValueError('Unknown dataset.')
+        splits = ds_class.get_splits(object_inds=inds['obj'], action_inds=inds['act'], use_precomputed_data=True)
         self.train_split, self.test_split = splits['train'], splits['test']
 
         # Model
@@ -290,7 +293,10 @@ class Launcher:
             stats.epoch_tic()
             for batch_idx, batch in self.data_loader_generator(data_loader, epoch_idx):
                 stats.batch_tic()
-                predictions = self.detector(batch)  # type: Prediction
+                if batch is None:
+                    predictions = Prediction()
+                else:
+                    predictions = self.detector(batch)  # type: Prediction
                 if data_loader.batch_size > 1:
                     predictions_v = vars(predictions)
                     for i in range(data_loader.batch_size):
@@ -317,18 +323,18 @@ class Launcher:
                 with open(cfg.watched_values_file, 'wb') as f:
                     pickle.dump(watched_values, f)
 
-        do_part_eval = do_hoi_eval = True
+        do_part_eval = do_hoi_eval = False
         for p in all_predictions:
             pr = Prediction(p)
-            do_part_eval = do_part_eval and pr.part_state_scores is not None
-            do_hoi_eval = do_hoi_eval and pr.hoi_scores is not None
-            if not do_part_eval and not do_hoi_eval:
+            do_part_eval = do_part_eval or pr.part_state_scores is not None
+            do_hoi_eval = do_hoi_eval or pr.hoi_scores is not None
+            if do_part_eval and do_hoi_eval:
                 break
 
         metric_dict = {}
         if do_part_eval:
             print('Part states:')
-            part_evaluator = PartEvaluatorImg(data_loader.dataset)
+            part_evaluator = PartEvaluatorHH(data_loader.dataset)
             part_evaluator.evaluate_predictions(all_predictions)
             part_evaluator.save(cfg.eval_res_file_format % 'part')
             part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
@@ -344,7 +350,12 @@ class Launcher:
             test_interactions = None
 
             print('Interactions (all):')
-            evaluator = EvaluatorImg(data_loader.dataset)
+            if cfg.ds == 'hh':
+                evaluator = EvaluatorHico(data_loader.dataset)
+            elif cfg.ds == 'vcoco':
+                evaluator = EvaluatorROI(data_loader.dataset)
+            else:
+                raise ValueError
             evaluator.evaluate_predictions(all_predictions)
             evaluator.save(cfg.eval_res_file_format % 'hoi')
             hoi_metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
@@ -413,12 +424,13 @@ class Launcher:
 
     def data_loader_generator(self, data_loader, epoch_idx):
         for batch_idx, batch in enumerate(data_loader):
-            try:
-                batch.epoch = epoch_idx
-                batch.iter = self.curr_train_iter
-            except AttributeError:
-                # type: List
-                batch[-1].extend([epoch_idx, self.curr_train_iter])
+            if batch is not None:
+                try:
+                    batch.epoch = epoch_idx
+                    batch.iter = self.curr_train_iter
+                except AttributeError:
+                    # type: List
+                    batch[-1].extend([epoch_idx, self.curr_train_iter])
             yield batch_idx, batch
 
 

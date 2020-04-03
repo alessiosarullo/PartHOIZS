@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub
-from lib.dataset.vcoco import VCoco, VCocoKPSplit
+from lib.dataset.vcoco import VCoco, VCocoSplit
 
 from lib.dataset.tin_utils import get_next_sp_with_pose
 from config import cfg
@@ -70,15 +70,10 @@ def vis_vcoco():
     os.makedirs(save_dir, exist_ok=True)
 
     ds = VCoco()
-    dssplit = VCocoKPSplit(split=split, full_dataset=ds, no_feats=True)
+    dssplit = VCocoSplit(split=split, full_dataset=ds)
 
     objects_str = ds.objects
     actions_str = ds.actions
-    det_data = ds._split_det_data[split]
-    im_idx_to_ho_pairs_inds = {}
-    for i, (image_idx, hum_idx, obj_idx) in enumerate(det_data.ho_pairs):
-        im_idx_to_ho_pairs_inds.setdefault(image_idx, []).append(i)
-    im_idx_to_ho_pairs_inds = {k: np.array(v) for k, v in im_idx_to_ho_pairs_inds.items()}
 
     n = dssplit.num_images if args.num_imgs <= 0 else args.num_imgs
     img_inds = list(range(n))
@@ -89,8 +84,8 @@ def vis_vcoco():
         np.random.shuffle(img_inds)
 
     all_t = 0
-    for idx in img_inds:
-        fname = ds.split_filenames[split][idx]
+    for idx, gt_im_data in zip(img_inds, dssplit.all_gt_img_data):
+        fname = gt_im_data.filename
         imid = int(fname.split('_')[-1].split('.')[0])
         # if fname not in ['COCO_train2014_000000047192.jpg',
         #                  'COCO_train2014_000000114229.jpg',
@@ -118,15 +113,11 @@ def vis_vcoco():
         visualizer = Visualizer(img, kp_thr=args.kp_thr)
 
         # Print annotations
-        all_img_ho_anns_inds = im_idx_to_ho_pairs_inds[idx]
-        img_hoi_pairs = ds._split_det_data[split].ho_pairs[all_img_ho_anns_inds]
-        img_act_labels = ds._split_det_data[split].labels[all_img_ho_anns_inds]
-        img_box_inds = np.unique(img_hoi_pairs[:, 1:])
-        img_box_inds = img_box_inds[~np.isnan(img_box_inds)].astype(np.int)
-        img_boxes_ext = ds._split_det_data[split].boxes[img_box_inds]
+        img_hoi_pairs = gt_im_data.ho_pairs
+        img_act_labels = gt_im_data.labels
+        img_boxes = gt_im_data.boxes
+        img_box_classes = gt_im_data.box_classes
         if args.gt:
-            img_boxes = img_boxes_ext[:, 1:5]
-            img_box_classes = img_boxes_ext[:, 5].astype(np.int)
             gt_box_labels = [ds.objects[c] for c in img_box_classes]
             visualizer.overlay_instances(labels=gt_box_labels, boxes=img_boxes, alpha=0.7, line_style='--', color='red')
 
@@ -136,7 +127,7 @@ def vis_vcoco():
             if np.isnan(obj_idx):
                 continue
             act_ind = np.flatnonzero(l).item()  # labels are one-hot encoded
-            obj_ind = int(ds._split_det_data[split].boxes[int(obj_idx), -1])
+            obj_ind = int(img_box_classes[int(obj_idx)])
             gt_str.append(f'{actions_str[act_ind]} {objects_str[obj_ind]}')
         print(f'\t\t{", ".join(gt_str)}')
 

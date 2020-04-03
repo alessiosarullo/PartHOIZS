@@ -1,8 +1,9 @@
-from typing import NamedTuple, List, Union
+from typing import NamedTuple
 
 import h5py
 import numpy as np
 import torch
+from typing import Union
 
 from config import cfg
 
@@ -21,23 +22,6 @@ COCO_CLASSES = [
     'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
     'scissors', 'teddy bear', 'hair drier', 'toothbrush', '__background__'
 ]
-
-
-class HoiTripletsData(NamedTuple):
-    boxes: np.ndarray  # each is (image_idx, x1, y1, x2, y2, class)
-    ho_pairs: np.ndarray  # each is (image_idx, hum_idx, obj_idx)
-    labels: np.ndarray  # one-hot encoded
-    fnames: List[str]  # for each human-object pair
-
-
-class Minibatch(NamedTuple):
-    ex_data: List
-    im_data: List
-    person_data: List
-    obj_data: List
-    ex_labels: Union[None, torch.Tensor]
-    pstate_labels: Union[None, torch.Tensor]
-    other: List
 
 
 class Dims(NamedTuple):

@@ -5,13 +5,12 @@ from typing import List, Dict
 import numpy as np
 
 from config import cfg
-from lib.dataset.hico import HicoSplit, Hico
 
 
 class BaseEvaluator:
     def __init__(self, dataset_split, *args, **kwargs):
-        self.dataset_split = dataset_split  # type: HicoSplit
-        self.full_dataset = self.dataset_split.full_dataset  # type: Hico
+        self.dataset_split = dataset_split
+        self.full_dataset = self.dataset_split.full_dataset
         self.metrics = {}  # type: Dict[str, np.ndarray]
 
     @property

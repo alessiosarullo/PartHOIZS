@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from sklearn.manifold import TSNE
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
+from lib.dataset.hico_hake import HicoHakeSplit, HicoHake
 from lib.models.abstract_model import AbstractModel
 from scripts.utils import get_all_models_by_name
 
@@ -24,7 +24,7 @@ def run_and_save(func, fname):
     else:
         obj_inds = act_inds = None
 
-    train_split = HicoHakeKPSplit(split='train', full_dataset=HicoHake(), object_inds=obj_inds, action_inds=act_inds)
+    train_split = HicoHakeSplit(split='train', full_dataset=HicoHake(), object_inds=obj_inds, action_inds=act_inds)
     model = get_all_models_by_name()[cfg.model](train_split)  # type: AbstractModel
     ckpt = torch.load(cfg.best_model_file, map_location='cpu')
     model.load_state_dict(ckpt['state_dict'])

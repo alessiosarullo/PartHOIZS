@@ -40,8 +40,8 @@ class Configs:
 
         # Image
         self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
-        self.max_ppl = 0
-        self.max_obj = 0
+        self.max_ppl = 3
+        self.max_obj = 3
 
         # Dataset
         self.ds = 'vcoco'

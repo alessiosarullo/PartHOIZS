@@ -27,7 +27,7 @@ from matplotlib import pyplot as plt
 
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub
-from lib.dataset.hico_hake import HicoHakeKPSplit, HicoHake
+from lib.dataset.hico_hake import HicoHakeSplit, HicoHake
 
 from lib.dataset.tin_utils import get_next_sp_with_pose
 import lib.utils
@@ -71,7 +71,7 @@ def vis_hico_hake_kps():
     os.makedirs(save_dir, exist_ok=True)
 
     ds = HicoHake()
-    dssplit = HicoHakeKPSplit(split=split, full_dataset=ds, no_feats=True)
+    dssplit = HicoHakeSplit(split=split, full_dataset=ds)
 
     if args.seenf >= 0:
         seen_objs, unseen_objs, seen_acts, unseen_acts, seen_interactions, unseen_interactions = \
@@ -83,13 +83,15 @@ def vis_hico_hake_kps():
         objects_str = ds.objects
         actions_str = ds.objects
 
-    n = len(dssplit) if args.num_imgs <= 0 else args.num_imgs
+    n = dssplit.num_images if args.num_imgs <= 0 else args.num_imgs
     img_inds = list(range(n))
     if args.rnd:
         seed = np.random.randint(1_000_000_000)
         print('Seed:', seed)
         np.random.seed(seed)
         np.random.shuffle(img_inds)
+
+    labels = ds.split_labels[dssplit.split]
 
     if args.filter:
         queries_str = [
@@ -113,18 +115,19 @@ def vis_hico_hake_kps():
         if np.any(queries < 0):
             raise ValueError('Unknown interaction(s).')
 
-        inds = np.flatnonzero(np.any(dssplit.labels[:, queries], axis=1))  # FIXME this assumes labels are for images
+        inds = np.flatnonzero(np.any(labels[:, queries], axis=1))
         print(f'{len(inds)} images retrieved.')
         img_inds = sorted(set(img_inds) & set(inds.tolist()))
 
+
     all_t = 0
-    for idx in img_inds:
+    fnames = ds.split_filenames[split]
+    for idx, fname in zip(img_inds, fnames):
         # if idx != 27272:  # FIXME delete
         #     continue
         # rotated images:
         #     'train2015': [18679, 19135, 27301, 28302, 32020],
         #     'test2015': [3183, 7684, 8435, 8817],
-        fname = ds.split_filenames[split][idx]
 
         print(f'Image {idx + 1:6d}/{n}, file {fname}.')
 
@@ -135,7 +138,7 @@ def vis_hico_hake_kps():
             continue
 
         # Print annotations
-        img_anns = ds.split_labels[dssplit.split][idx, :]
+        img_anns = labels[idx, :]
         gt_str = []
         for i, s in enumerate(img_anns):
             act_ind = ds.interactions[i, 0]

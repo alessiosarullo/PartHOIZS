@@ -4,14 +4,14 @@ from typing import List, Dict
 import numpy as np
 from sklearn.metrics import average_precision_score, recall_score, precision_score
 
-from lib.dataset.hico import HicoSplit
+from lib.dataset.hico_hake import HicoHakeSplit
 from lib.eval.eval_utils import BaseEvaluator
 from lib.models.abstract_model import Prediction
 from lib.timer import Timer
 
 
-class EvaluatorImg(BaseEvaluator):
-    def __init__(self, dataset_split: HicoSplit):
+class EvaluatorHico(BaseEvaluator):
+    def __init__(self, dataset_split: HicoHakeSplit):
         super().__init__(dataset_split)
 
         self.gt_scores = self.full_dataset.split_labels[self.dataset_split.split]
