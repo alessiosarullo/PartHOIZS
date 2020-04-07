@@ -412,7 +412,7 @@ class HoiInstancesFeatProvider(FeatProvider):
 
             try:
                 self.pstate_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'pstate_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
-            except AttributeError:
+            except KeyError:
                 self.pstate_labels = None
 
             self.labels = self._filter_zs_labels(self.labels)

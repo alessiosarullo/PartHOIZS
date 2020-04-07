@@ -15,6 +15,7 @@ from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.vcoco import VCocoSplit
 from lib.eval.evaluator_vcoco_roi import EvaluatorVCocoROI
+from lib.eval.evaluator_hicodet_roi import EvaluatorHicoDetROI
 from lib.eval.vsrl_eval import VCOCOeval, pkl_from_predictions
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.radam import RAdam
@@ -340,8 +341,8 @@ class Launcher:
             part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
             metric_dict.update(part_metric_dict)
 
-            null_interactions = np.flatnonzero([states[-1] for states in self.test_split.full_dataset.states_per_part]).tolist()
-            part_interactiveness_metric_dict = part_evaluator.output_metrics(compute_pos=False, to_keep=null_interactions)
+            null_classes = np.flatnonzero([states[-1] for states in self.test_split.full_dataset.states_per_part]).tolist()
+            part_interactiveness_metric_dict = part_evaluator.output_metrics(compute_pos=False, to_keep=null_classes)
             part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
             assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
             metric_dict.update(part_interactiveness_metric_dict)
@@ -360,10 +361,11 @@ class Launcher:
             else:
                 print('Interactions (all):')
                 if cfg.ds == 'hh':
-                    raise NotImplementedError
-                    # TODO
+                    evaluator = EvaluatorHicoDetROI(dataset)
+                    null_classes = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
                 elif cfg.ds == 'vcoco':
                     evaluator = EvaluatorVCocoROI(dataset)
+                    null_classes = [0]
                 else:
                     raise ValueError
                 evaluator.evaluate_predictions(all_predictions)
@@ -372,13 +374,14 @@ class Launcher:
                 assert not (set(hoi_metric_dict.keys()) & set(metric_dict.keys()))
                 metric_dict.update(hoi_metric_dict)
 
-                null_interactions = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
-                interactiveness_metric_dict = evaluator.output_metrics(compute_pos=False, to_keep=null_interactions)
+                interactiveness_metric_dict = evaluator.output_metrics(compute_pos=False, to_keep=null_classes)
                 interactiveness_metric_dict = {f'HOI_interactiveness_{k}': v for k, v in interactiveness_metric_dict.items()}
                 assert not (set(interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
                 metric_dict.update(interactiveness_metric_dict)
 
                 if cfg.seenf >= 0:
+                    raise NotImplementedError
+                    # TODO
                     def get_metrics(_interactions):
                         return evaluator.output_metrics(to_keep=sorted(_interactions))
 
