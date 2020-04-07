@@ -29,11 +29,11 @@ class VCocoSplit(HoiDatasetSplit):
         dims = super().dims
         dims = dims._replace(P=1, M=1)  # each example is an interaction, so 1 person and 1 object
         if self._feat_provider is not None:
-            K_hake = self._feat_provider.hake_kp_boxes.shape[1]
+            B = self._feat_provider.hake_kp_boxes.shape[1]
             F_img = self._feat_provider.pc_img_feats.shape[1]
             F_kp = self._feat_provider.kp_net_dim
             F_obj = self._feat_provider.obj_feats_dim
-            dims = dims._replace(K_hake=K_hake, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+            dims = dims._replace(B=B, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
         return dims
 
 
@@ -42,9 +42,25 @@ class VCoco(HoiDataset):
         driver = VCocoDriver()  # type: VCocoDriver
 
         object_classes = driver.objects
-        action_classes = driver.actions
+
+        # Extend actions, creating one for every role
         null_action = driver.null_interaction
-        interactions = driver.interactions
+        action_classes = [null_action] + \
+                         [f'{x["action_name"]}_{r}' for x in driver.interaction_class_data[1:] for r in (x['role_name'][1:] or ['agent'])]
+        action_index = {x: i for i, x in enumerate(action_classes)}
+
+        interactions = set()
+        for s in ['train', 'test']:
+            for img_anns in driver.hoi_annotations_per_split[s].values():
+                for im_ann in img_anns:
+                    a = im_ann['action']
+                    act_name = driver.actions[a]  # the original actions have to be used here!
+                    for r, obj_id in enumerate(im_ann['role_object_id']):
+                        if obj_id > 0:
+                            interactions.add((action_index[f'{act_name}_{driver.interaction_class_data[a]["role_name"][1 + r]}'],
+                                              driver.object_annotations[obj_id]['obj']))
+        interactions = np.unique(np.array(sorted(interactions)), axis=0)
+
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
 
         self._split_gt_data = {'train': self.compute_img_data(split='train', driver=driver),
@@ -84,32 +100,41 @@ class VCoco(HoiDataset):
                     im_box_classes.append(hum_class)
                 hum_idx_in_img = box_ids_to_idx[hum_id]
 
-                act_id = ann['action']
+                orig_act_id = ann['action']
 
-                num_roles = len(driver.interaction_class_data[act_id]['role_name'])
-                if num_roles == 1:
-                    obj_id = -1
-                elif num_roles == 2:
-                    obj_id = ann['role_object_id'][0]
-                elif num_roles == 3:
-                    # TODO? Handle  {'action_name': 'cut', 'role_name': ['agent', 'instr', 'obj']}, making it cut_with? What about similar actions?
-                    role_id = driver.interaction_class_data[act_id]['role_name'].index('obj') - 1
-                    obj_id = ann['role_object_id'][role_id]
-                else:
-                    raise ValueError(f'Too many roles: {num_roles}.')
-                if obj_id > 0:
-                    obj_box = driver.object_annotations[obj_id]['bbox']
-                    obj_class = driver.object_annotations[obj_id]['obj']
-                    if obj_id not in box_ids_to_idx:
-                        box_ids_to_idx[obj_id] = len(im_boxes)
-                        im_boxes.append(obj_box)
-                        im_box_classes.append(obj_class)
-                    obj_idx_in_img = box_ids_to_idx[obj_id]
-                else:
-                    obj_idx_in_img = np.nan
+                role_names = (driver.interaction_class_data[orig_act_id]['role_name'][1:] or ['agent'])  # only consider 'agent' if no objects
+                role_ids = ann['role_object_id'] or [0]  # object IDs, or 0 for actions with no objects
+                assert len(role_names) == len(role_ids)
 
-                im_ho_pairs.append(np.array([hum_idx_in_img, obj_idx_in_img]))
-                im_actions.append(act_id)
+                # if two roles are specified but one of the objects is 0, filter it out
+                if len(role_ids) > 1:
+                    assert len(role_ids) == 2
+                    new_role_ids, new_role_names = [], []
+                    for rid, rname in zip(role_ids, role_names):
+                        if rid > 0:
+                            new_role_ids.append(rid)
+                            new_role_names.append(rname)
+                    if not new_role_ids:  # both are 0
+                        assert not new_role_names
+                        new_role_ids, new_role_names = [0], ['obj']
+                    role_ids, role_names = new_role_ids, new_role_names
+                    assert (role_ids and role_names) and (len(role_ids) == len(role_names))
+
+                for role_name, obj_id in zip(role_names, role_ids):
+                    if obj_id > 0:
+                        obj_box = driver.object_annotations[obj_id]['bbox']
+                        obj_class = driver.object_annotations[obj_id]['obj']
+                        if obj_id not in box_ids_to_idx:
+                            box_ids_to_idx[obj_id] = len(im_boxes)
+                            im_boxes.append(obj_box)
+                            im_box_classes.append(obj_class)
+                        obj_idx_in_img = box_ids_to_idx[obj_id]
+                    else:
+                        obj_idx_in_img = np.nan
+
+                    actual_act_id = self.action_index[f'{driver.actions[orig_act_id]}_{role_name}']
+                    im_ho_pairs.append(np.array([hum_idx_in_img, obj_idx_in_img]))
+                    im_actions.append(actual_act_id)
 
             im_boxes = np.stack(im_boxes, axis=0)
             im_box_classes = np.array(im_box_classes)
@@ -121,7 +146,6 @@ class VCoco(HoiDataset):
             split_data.append(GTImgData(filename=driver.image_infos[img_id]['file_name'],
                                         img_size=np.array([driver.image_infos[img_id]['width'], driver.image_infos[img_id]['height']]),
                                         boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_actions_one_hot))
-
         return split_data
 
 
@@ -134,7 +158,7 @@ class VCocoDriver:
         # Annotations
         self.image_infos, object_data, hoi_data, extra_data = self.load_annotations()
         self.object_annotations, self.objects = object_data
-        self.hoi_annotations_per_split, self.actions, self.interactions = hoi_data
+        self.hoi_annotations_per_split, self.actions = hoi_data
         self.object_class_data, self.interaction_class_data, self.all_hoi_data_per_split = extra_data
 
     def load_annotations(self):
@@ -210,17 +234,7 @@ class VCocoDriver:
             hoi_annotations[hsplit].update(split_data)
         hoi_annotations = {k: {k1: v[k1] for k1 in sorted(v.keys())} for k, v in hoi_annotations.items()}
 
-        interactions = sorted({(im_ann['action'], object_annotations[obj_id]['obj'])
-                               for s in ['train', 'test']
-                               for img_anns in hoi_annotations[s].values()
-                               for im_ann in img_anns
-                               for obj_id in (im_ann['role_object_id'][-1:] if actions[im_ann['action']] != 'eat'
-                                              else im_ann['role_object_id'][:1])
-                               if obj_id > 0})
-        interactions = np.unique(np.array(interactions), axis=0)
-
-        return image_infos, [object_annotations, objects], [hoi_annotations, actions, interactions], \
-               [object_class_data, interaction_class_data, all_hoi_data]
+        return image_infos, [object_annotations, objects], [hoi_annotations, actions], [object_class_data, interaction_class_data, all_hoi_data]
 
 
 if __name__ == '__main__':

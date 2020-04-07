@@ -30,7 +30,7 @@ class Prediction:
         self.obj_boxes = None  # type: Union[None, np.ndarray]
 
         self.ho_pairs = None  # type: Union[None, np.ndarray]
-        self.hoi_scores = None  # type: Union[None, np.ndarray]
+        self.output_scores = None  # type: Union[None, np.ndarray]
 
         if prediction_dict is not None:
             # try:

@@ -1,82 +1,15 @@
-import pickle
 from collections import Counter
 from typing import List, Dict
 
 import numpy as np
 
-from config import cfg
 
-
-class BaseEvaluator:
-    def __init__(self, dataset_split, *args, **kwargs):
-        self.dataset_split = dataset_split
-        self.full_dataset = self.dataset_split.full_dataset
-        self.metrics = {}  # type: Dict[str, np.ndarray]
-
-    @property
-    def gt_hoi_labels(self):
+class Evaluator:
+    def evaluate_predictions(self, predictions: List[Dict], **kwargs):
         raise NotImplementedError
 
-    def load(self, fn):
-        with open(fn, 'rb') as f:
-            d = pickle.load(f)
-            self.__dict__.update(d)
-
-    def save(self, fn):
+    def output_metrics(self, to_keep=None, compute_pos=True, **kwargs) -> Dict[str, np.ndarray]:
         raise NotImplementedError
-
-    def evaluate_predictions(self, predictions: List[Dict]):
-        raise NotImplementedError()
-
-    def output_metrics(self, sort=False, interactions_to_keep=None, compute_pos=True):
-        mf = MetricFormatter()
-
-        metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep)
-
-        if compute_pos:
-            # Same, but with null interaction filtered
-            no_null_interaction_mask = (self.full_dataset.interactions[:, 0] > 0)
-            if interactions_to_keep is None:
-                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask).tolist())
-            else:
-                interaction_mask = np.zeros(self.full_dataset.num_interactions, dtype=bool)
-                interaction_mask[np.array(interactions_to_keep).astype(np.int)] = True
-                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask & interaction_mask).tolist())
-            pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep, prefix='p')
-
-            for k, v in pos_metrics.items():
-                assert k not in metrics.keys()
-                metrics[k] = v
-        return metrics
-
-    def _output_metrics(self, mformatter, sort, interactions_to_keep, prefix=''):
-        gt_hoi_class_hist, hoi_metrics, hoi_class_inds = sort_and_filter(metrics=self.metrics,
-                                                                         gt_labels=self.gt_hoi_labels,
-                                                                         all_classes=list(range(self.full_dataset.num_interactions)),
-                                                                         sort=sort,
-                                                                         keep_inds=interactions_to_keep,
-                                                                         metric_prefix=prefix)
-        mformatter.format_metric_and_gt_lines(gt_hoi_class_hist, hoi_metrics, hoi_class_inds, gt_str='GT HOIs', verbose=cfg.verbose)
-        return hoi_metrics
-
-
-def sort_and_filter(metrics, gt_labels, all_classes, sort=False, keep_inds=None, metric_prefix=''):
-    gt_labels_hist = Counter(gt_labels)
-    for c in all_classes:
-        gt_labels_hist.setdefault(c, 0)
-
-    if keep_inds:
-        del_inds = set(gt_labels_hist.keys()) - set(keep_inds)
-        for k in del_inds:
-            del gt_labels_hist[k]
-
-    if sort:
-        class_inds = [p for p, num in gt_labels_hist.most_common()]
-    else:
-        class_inds = sorted(gt_labels_hist.keys())
-
-    metrics = {metric_prefix + k: v[class_inds] if v.size > 1 else v for k, v in metrics.items()}
-    return gt_labels_hist, metrics, class_inds
 
 
 class MetricFormatter:
@@ -122,3 +55,22 @@ class MetricFormatter:
                 return ('% {}.{}f%%'.format(precision + 5, 0)) % (value * 100)
         else:
             return ('% {}d%%'.format(precision + 5)) % (100 * np.sign(value))
+
+
+def sort_and_filter(metrics, gt_labels, all_classes, sort=False, keep_inds=None, metric_prefix=''):
+    gt_labels_hist = Counter(gt_labels)
+    for c in all_classes:
+        gt_labels_hist.setdefault(c, 0)
+
+    if keep_inds:
+        del_inds = set(gt_labels_hist.keys()) - set(keep_inds)
+        for k in del_inds:
+            del gt_labels_hist[k]
+
+    if sort:
+        class_inds = [p for p, num in gt_labels_hist.most_common()]
+    else:
+        class_inds = sorted(gt_labels_hist.keys())
+
+    metrics = {metric_prefix + k: v[class_inds] if v.size > 1 else v for k, v in metrics.items()}
+    return gt_labels_hist, metrics, class_inds

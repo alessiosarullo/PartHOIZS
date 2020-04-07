@@ -161,7 +161,6 @@ class FeatProvider(torch.utils.data.Dataset):
         #############################################################################################################################
         no_feats = False  # FIXME
 
-        # TODO remove
         #####################################################
         # Image
         #####################################################
@@ -356,6 +355,141 @@ class FeatProvider(torch.utils.data.Dataset):
         raise NotImplementedError
 
 
+class ImgInstancesFeatProvider(FeatProvider):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if self.split != 'test':
+            try:
+                self.labels = self.wrapped_ds.full_dataset.split_labels[self.split]  # type: np.ndarray
+            except AttributeError:
+                raise ValueError(f'Dataset of type {type(self.full_dataset)} not supported.')
+
+            self.labels = self._filter_zs_labels(self.labels)
+
+            non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
+            imgs_with_kps = [i for i, imd in enumerate(self.img_data_cache) if 'person_inds' in imd]
+            self.non_empty_inds = np.intersect1d(non_empty_inds, np.array(imgs_with_kps))
+
+    def _get_test_loader(self, batch_size, **kwargs):
+        data_loader = torch.utils.data.DataLoader(
+            dataset=self,
+            batch_size=batch_size,
+            collate_fn=lambda x: self.collate(x),
+            **kwargs,
+        )
+        return data_loader
+
+    def __len__(self):
+        return len(self.img_data_cache)
+
+    def _collate(self, idx_list, device) -> Minibatch:
+        # This assumes the filtering has been done on initialisation (i.e., there are no more people/objects than the max number)
+        idxs = np.array(idx_list)
+
+        # Example data
+        ex_ids = [f'ex{idx}' for idx in idxs]
+        feats = torch.tensor(self.pc_img_feats[idxs, :], dtype=torch.float32, device=device)
+
+        # Image data
+        im_ids = [self.wrapped_ds.all_gt_img_data[idx].filename for idx in idxs]
+        im_feats = feats
+        orig_img_wh = torch.tensor(np.stack([self.wrapped_ds.all_gt_img_data[idx].img_size for idx in idxs], axis=0),
+                                   dtype=torch.float32, device=device)
+
+        dims = self.wrapped_ds.dims
+        P, M, K, B, O, F_kp, F_obj, D = dims.P, dims.M, dims.K, dims.B, dims.O, dims.F_kp, dims.F_obj, dims.D
+        N = idxs.size  # #imgs
+
+        ppl_boxes = np.zeros((N, P, 4), dtype=np.float32)
+        ppl_feats = np.zeros((N, P, F_kp), dtype=np.float32)
+        coco_kps = np.zeros((N, P, K, 3), dtype=np.float32)
+        kp_boxes = np.zeros((N, P, B, 5), dtype=np.float32)
+        kp_feats = np.zeros((N, P, B, F_kp), dtype=np.float32)
+        obj_boxes = np.zeros((N, M, 4), dtype=np.float32)
+        obj_scores = np.zeros((N, M, O), dtype=np.float32)
+        obj_feats = np.zeros((N, M, F_obj), dtype=np.float32)
+
+        person_inds = np.full((N, P), fill_value=np.nan)
+        obj_inds = np.full((N, M), fill_value=np.nan)
+        for i, idx in enumerate(idxs):
+            im_data = self.img_data_cache[idx]
+            try:
+                i_person_inds = im_data['person_inds']
+                P_i = i_person_inds.size
+                assert P_i <= P
+                person_inds[i, :P_i] = i_person_inds
+            except KeyError:
+                pass
+
+            try:
+                i_obj_inds = im_data['obj_inds']
+                M_i = i_obj_inds.size
+                assert M_i <= M
+                obj_inds[i, :M_i] = i_obj_inds
+            except KeyError:
+                pass
+
+        valid_person_inds_mask = ~np.isnan(person_inds)
+        valid_person_mask = np.zeros(self.person_boxes.shape[0], dtype=bool)  # using mask instead of inds in case H5 file are not loaded in memory.
+        valid_person_mask[person_inds[valid_person_inds_mask].astype(np.int)] = True
+        ppl_boxes[valid_person_inds_mask] = self.person_boxes[valid_person_mask]
+        ppl_feats[valid_person_inds_mask] = self.person_feats[valid_person_mask, ...]
+        coco_kps[valid_person_inds_mask] = self.coco_kps[valid_person_mask]
+        kp_boxes[valid_person_inds_mask] = self.hake_kp_boxes[valid_person_mask]
+        kp_feats[valid_person_inds_mask] = self.hake_kp_feats[valid_person_mask, ...]
+
+        valid_obj_inds_mask = ~np.isnan(obj_inds)
+        valid_obj_mask = np.zeros(self.obj_boxes.shape[0], dtype=bool)
+        valid_obj_mask[obj_inds[valid_obj_inds_mask].astype(np.int)] = True
+        obj_boxes[valid_obj_inds_mask] = self.obj_boxes[valid_obj_mask]
+        obj_scores[valid_obj_inds_mask] = self.obj_scores[valid_obj_mask]
+        obj_feats[valid_obj_inds_mask] = self.obj_feats[valid_obj_mask, ...]
+
+        t_ppl_boxes = torch.from_numpy(ppl_boxes).to(device=device)
+        t_ppl_feats = torch.from_numpy(ppl_feats).to(device=device)
+        t_coco_kps = torch.from_numpy(coco_kps).to(device=device)
+        t_kp_boxes = torch.from_numpy(kp_boxes).to(device=device)
+        t_kp_feats = torch.from_numpy(kp_feats).to(device=device)
+        t_obj_boxes = torch.from_numpy(obj_boxes).to(device=device)
+        t_obj_scores = torch.from_numpy(obj_scores).to(device=device)
+        t_obj_feats = torch.from_numpy(obj_feats).to(device=device)
+
+        if self.split != 'test':
+            img_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
+            try:
+                raise NotImplementedError  # TODO
+                pstate_labels = torch.tensor(self.wrapped_ds.img_pstate_labels[idxs, :], dtype=torch.float32, device=device)
+            except AttributeError:
+                pstate_labels = None
+            labels = Labels(hoi=img_labels, pstate=pstate_labels)
+        else:
+            labels = Labels()
+
+        mb = Minibatch(ex_data=[ex_ids, feats],
+                       im_data=[im_ids, im_feats, orig_img_wh],
+                       person_data=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
+                       obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
+                       labels=labels)
+
+        if cfg.tin:
+            interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + B), dtype=np.float32)
+            for i in range(N):
+                valid_person_inds_mask_i = valid_person_inds_mask[i]
+                valid_obj_inds_mask_i = valid_obj_inds_mask[i]
+                pattern = get_next_sp_with_pose(human_boxes=ppl_boxes[i, valid_person_inds_mask_i],
+                                                human_poses=coco_kps[i, valid_person_inds_mask_i],
+                                                object_boxes=obj_boxes[i, valid_obj_inds_mask_i],
+                                                size=D,
+                                                part_boxes=kp_boxes[i, valid_person_inds_mask_i, :, :4]
+                                                )
+                r, c = np.where(valid_person_inds_mask_i[:, None] & valid_obj_inds_mask_i[None, :])
+                interactiveness_patterns[i, r, c] = pattern.reshape((-1, *pattern.shape[2:]))
+            t_interactiveness_patterns = torch.from_numpy(interactiveness_patterns).to(device=device)
+            mb.person_data.append(t_interactiveness_patterns)
+        return mb
+
+
 class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, ds_name, *args, **kwargs):
         super().__init__(ds_name=ds_name, max_ppl=0, max_obj=0, *args, **kwargs)
@@ -365,7 +499,6 @@ class HoiInstancesFeatProvider(FeatProvider):
         fname_ids_to_img_idx = {imdata['fname_id']: im_idx for im_idx, imdata in enumerate(self.img_data_cache)}
         ho_im_idxs = np.array([fname_ids_to_img_idx[fname_id] for fname_id in ho_infos[:, 0]])
         ho_infos = np.concatenate([ho_im_idxs[:, None], ho_infos], axis=1)  # [im_idx, fname_id, hum_idx, obj_idx, is_obj_human]
-        assert ho_infos.shape[1] == 5
 
         # Sanity check and filtering. Indices might not be in the image data because filtering is performed that might remove some person/objects.
         all_person_inds = {idx for im_data in self.img_data_cache for idx in im_data.get('person_inds', [])}
@@ -394,26 +527,11 @@ class HoiInstancesFeatProvider(FeatProvider):
 
         valid_hois = np.array(valid_hois)
         assert not np.any(np.isnan(valid_hois)) and not np.any(valid_hois < 0)
-        self.ho_infos = ho_infos[valid_hois]  # see above for format
+        self.ho_infos = ho_infos[valid_hois]
 
         if self.split != 'test':
-            _labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
-            assert self.ho_infos.shape[0] == _labels.shape[0]
-            if self.labels_are_actions:
-                negatives = (_labels[:, 0] > 0)
-                positives = np.any(_labels[:, 1:] > 0, axis=1)
-            else:
-                null_interactions = (self.full_dataset.interactions[:, 0] == 0)
-                negatives = np.any(_labels[:, null_interactions] > 0, axis=1)
-                positives = np.any(_labels[:, ~null_interactions] > 0, axis=1)
-            assert np.all(negatives ^ positives)
-            print(f'Negatives per positive: {np.sum(negatives) / np.sum(positives)}')
-            self.labels = _labels
-
-            try:
-                self.pstate_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'pstate_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
-            except AttributeError:
-                self.pstate_labels = None
+            self.labels = PrecomputedFilesHandler.get(self.hoi_fn, 'action_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            print(f'Negatives per positive: {np.sum(self.labels[:, 0] > 0) / np.sum(self.labels[:, 0] == 0)}')
 
             self.labels = self._filter_zs_labels(self.labels)
             self.non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
@@ -526,17 +644,16 @@ class HoiInstancesFeatProvider(FeatProvider):
                                    np.array([box_ind_mapping[idx] for idx in obj_inds]),
                                    ], axis=1)
 
-        act_labels = pstate_labels = None
         if self.split != 'test':
             act_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
-            if self.pstate_labels is not None:
-                pstate_labels = torch.tensor(self.pstate_labels[idxs, :], dtype=torch.float32, device=device)
+        else:
+            act_labels = None
 
         mb = Minibatch(ex_data=[ex_ids, feats, all_boxes, local_ho_pairs],
                        im_data=[im_ids, im_feats, orig_img_wh],
                        person_data=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
                        obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
-                       labels=Labels(act=act_labels, pstate=pstate_labels))
+                       labels=Labels(act=act_labels))
         if cfg.tin:
             interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + B), dtype=np.float32)
             for i in range(N):

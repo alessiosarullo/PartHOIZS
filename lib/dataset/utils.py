@@ -28,9 +28,8 @@ class Dims(NamedTuple):
     N: Union[int, None]  # number of images in the batch (it is defined later)
     P: Union[int, None]  # number of people
     M: Union[int, None]  # number of objects
-    K_coco: Union[int, None]  # number of keypoints returned by the keypoint detector
-    K_hake: Union[int, None]  # number of keypoints in HAKE
-    B: Union[int, None]  # number of body part classes
+    K: Union[int, None]  # number of keypoints returned by the keypoint detector
+    B: Union[int, None]  # number of body parts
     S: Union[int, None]  # number of body part states
     O: Union[int, None]  # number of object classes
     A: Union[int, None]  # number of action classes

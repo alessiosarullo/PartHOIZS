@@ -38,7 +38,7 @@ class HicoHakeSplit(HoiDatasetSplit):
 
 
 class HicoHake(Hico):
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         """
         In the following, BP = body parts and PS = (body) part state.
         Attributes:
@@ -50,7 +50,7 @@ class HicoHake(Hico):
             - part_to_kp: List[np.array]. Associates to each part an array of keypoints (e.g., at the index corresponding to 'foot' there will be
                             indices for ['right foot', 'left foot']).
         """
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
         with open(os.path.join(cfg.data_root, 'HICO', 'HAKE', 'Part_State_76.txt'), 'r') as f:
             bp_ps_dict_str = {}

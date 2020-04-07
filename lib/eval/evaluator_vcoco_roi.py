@@ -1,23 +1,21 @@
-import pickle
+from collections import Counter
 from typing import List, Dict
 
-from collections import Counter
-
 import numpy as np
-from sklearn.metrics import average_precision_score
 
+from config import cfg
 from lib.bbox_utils import compute_ious
 from lib.dataset.hoi_dataset import GTImgData
 from lib.dataset.vcoco import VCocoSplit
-from lib.eval.eval_utils import BaseEvaluator
+from lib.eval.eval_utils import Evaluator, MetricFormatter, sort_and_filter
 from lib.models.abstract_model import Prediction
 from lib.timer import Timer
 
 
-class EvaluatorROI(BaseEvaluator):
+class EvaluatorVCocoROI(Evaluator):
     def __init__(self, dataset_split: VCocoSplit, iou_thresh=0.5, hoi_score_thr=None, num_hoi_thr=None):
-        super().__init__(dataset_split)
         self.dataset_split = dataset_split  # type: VCocoSplit
+        self.full_dataset = self.dataset_split.full_dataset
         self.gt_data = self.dataset_split.all_gt_img_data
         self.iou_thresh = iou_thresh
         self.hoi_score_thr = hoi_score_thr
@@ -26,8 +24,8 @@ class EvaluatorROI(BaseEvaluator):
         self._init()
 
     def _init(self):
-        self.gt_hoi_onehot_labels = []
-        self.predict_hoi_scores = []
+        self.gt_onehot_labels = []
+        self.predict_scores = []
         self.pred_gt_assignment_per_hoi = []
         self.gt_count = 0
 
@@ -35,15 +33,38 @@ class EvaluatorROI(BaseEvaluator):
 
     @property
     def gt_hoi_labels(self):
-        return np.where(np.concatenate(self.gt_hoi_onehot_labels, axis=0))[1]
+        return np.where(np.concatenate(self.gt_onehot_labels, axis=0))[1]
 
-    def save(self, fn):
-        with open(fn, 'wb') as f:
-            pickle.dump({'assignment': self.pred_gt_assignment_per_hoi,
-                         'gt_classes': np.concatenate(self.gt_hoi_onehot_labels, axis=0),
-                         'metrics': self.metrics}, f)
+    def output_metrics(self, to_keep=None, compute_pos=True, sort=False, **kwargs):
+        mf = MetricFormatter()
 
-    def evaluate_predictions(self, predictions: List[Dict]):
+        metrics = self._output_metrics(mf, sort=sort, actions_to_keep=to_keep)
+
+        if compute_pos:
+            # Same, but with null interaction filtered
+            if to_keep is None:
+                to_keep = list(range(1, self.full_dataset.num_actions))
+            else:
+                assert isinstance(to_keep, list)
+                to_keep = sorted(set(to_keep) - {0})
+            pos_metrics = self._output_metrics(mf, sort=sort, actions_to_keep=to_keep, prefix='p')
+
+            for k, v in pos_metrics.items():
+                assert k not in metrics.keys()
+                metrics[k] = v
+        return metrics
+
+    def _output_metrics(self, mformatter, sort, actions_to_keep, prefix=''):
+        gt_hoi_class_hist, hoi_metrics, hoi_class_inds = sort_and_filter(metrics=self.metrics,
+                                                                         gt_labels=self.gt_hoi_labels,
+                                                                         all_classes=list(range(self.full_dataset.num_actions)),
+                                                                         sort=sort,
+                                                                         keep_inds=actions_to_keep,
+                                                                         metric_prefix=prefix)
+        mformatter.format_metric_and_gt_lines(gt_hoi_class_hist, hoi_metrics, hoi_class_inds, gt_str='GT HOIs', verbose=cfg.verbose)
+        return hoi_metrics
+
+    def evaluate_predictions(self, predictions: List[Dict], **kwargs):
         self._init()
         assert len(predictions) == self.dataset_split.num_images, (len(predictions), self.dataset_split.num_images)
 
@@ -52,7 +73,7 @@ class EvaluatorROI(BaseEvaluator):
         for i, res in enumerate(predictions):
             prediction = Prediction(res)
             self.match_prediction_to_gt(self.gt_data[i], prediction)
-        gt_hoi_labels = np.concatenate(self.gt_hoi_onehot_labels, axis=0)
+        gt_hoi_labels = np.concatenate(self.gt_onehot_labels, axis=0)
         assert self.gt_count == gt_hoi_labels.shape[0]
         Timer.get('Eval epoch', 'Predictions').toc()
 
@@ -63,13 +84,13 @@ class EvaluatorROI(BaseEvaluator):
         Timer.get('Eval epoch').toc()
 
     def compute_metrics(self):
-        predict_hoi_scores = np.concatenate(self.predict_hoi_scores, axis=0)
+        predict_hoi_scores = np.concatenate(self.predict_scores, axis=0)
         pred_gt_ho_assignment = np.concatenate(self.pred_gt_assignment_per_hoi, axis=0)
         gt_hoi_classes_count = Counter(self.gt_hoi_labels.tolist())
 
-        ap = np.zeros(self.full_dataset.num_interactions)
-        recall = np.zeros(self.full_dataset.num_interactions)
-        for j in range(self.full_dataset.num_interactions):
+        ap = np.zeros(self.full_dataset.num_actions)
+        recall = np.zeros(self.full_dataset.num_actions)
+        for j in range(self.full_dataset.num_actions):
             num_gt_hois = gt_hoi_classes_count[j]
             if num_gt_hois == 0:
                 continue
@@ -109,7 +130,7 @@ class EvaluatorROI(BaseEvaluator):
         gt_ho_ids = self.gt_count + np.arange(num_gt_hois)
         self.gt_count += num_gt_hois
 
-        predict_hoi_scores = np.zeros([0, self.full_dataset.num_interactions])
+        predict_act_scores = np.zeros([0, self.full_dataset.num_actions])
         predict_ho_pairs = np.zeros((0, 2), dtype=np.int)
         predict_boxes = np.zeros((0, 4))
         if prediction.obj_boxes is not None:
@@ -117,12 +138,12 @@ class EvaluatorROI(BaseEvaluator):
 
             if prediction.ho_pairs is not None:
                 predict_ho_pairs = prediction.ho_pairs
-                predict_hoi_scores = prediction.hoi_scores
+                predict_act_scores = prediction.output_scores
         else:
             assert prediction.ho_pairs is None
 
         pred_gt_ious = compute_ious(predict_boxes, gt_boxes)
-        pred_gt_assignment_per_hoi = np.full((predict_hoi_scores.shape[0], self.full_dataset.num_interactions), fill_value=-1, dtype=np.int)
+        pred_gt_assignment_per_hoi = np.full((predict_act_scores.shape[0], self.full_dataset.num_actions), fill_value=-1, dtype=np.int)
         for predict_idx, (ph, po) in enumerate(predict_ho_pairs):
             gt_pair_ious = np.zeros(num_gt_hois)
             for gtidx, (gh, go) in enumerate(gt_ho_pairs):
@@ -130,7 +151,7 @@ class EvaluatorROI(BaseEvaluator):
                 iou_o = pred_gt_ious[po, go]
                 gt_pair_ious[gtidx] = min(iou_h, iou_o)
             if np.any(gt_pair_ious >= self.iou_thresh):
-                gt_pair_ious_per_hoi = np.zeros((num_gt_hois, self.full_dataset.num_interactions))
+                gt_pair_ious_per_hoi = np.zeros((num_gt_hois, self.full_dataset.num_actions))
                 gt_pair_ious_per_hoi[np.arange(num_gt_hois), gt_hoi_classes] = gt_pair_ious
                 gt_assignments = gt_pair_ious_per_hoi.argmax(axis=0)[np.any(gt_pair_ious_per_hoi >= self.iou_thresh, axis=0)]
                 gt_hoi_assignments = gt_hoi_classes[gt_assignments]
@@ -138,8 +159,8 @@ class EvaluatorROI(BaseEvaluator):
                 assert np.unique(gt_hoi_assignments).size == gt_hoi_assignments.size
                 pred_gt_assignment_per_hoi[predict_idx, gt_hoi_assignments] = gt_ho_ids[gt_assignments]
 
-        self.gt_hoi_onehot_labels.append(gt_labels)
-        self.predict_hoi_scores.append(predict_hoi_scores)
+        self.gt_onehot_labels.append(gt_labels)
+        self.predict_scores.append(predict_act_scores)
         self.pred_gt_assignment_per_hoi.append(pred_gt_assignment_per_hoi)
 
     @staticmethod

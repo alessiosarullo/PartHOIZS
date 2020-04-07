@@ -7,10 +7,11 @@ import numpy as np
 class GTImgData(NamedTuple):
     filename: str
     img_size: np.ndarray  # width, height
-    labels: np.ndarray  # one-hot encoded
-    boxes: Union[None, np.ndarray] = None
-    box_classes: Union[None, np.ndarray] = None
-    ho_pairs: Union[None, np.ndarray] = None  # hum_idx, obj_idx
+    labels: Union[None, np.ndarray] = None  # one-hot encoded
+    boxes: Union[None, np.ndarray] = None  # N x 4
+    box_classes: Union[None, np.ndarray] = None  # N
+    ho_pairs: Union[None, np.ndarray] = None  # R x 2, [hum_idx, obj_idx]
+    ps_labels: Union[None, np.ndarray] = None  # R x S, multilabel
 
 
 class HoiDataset:

@@ -4,7 +4,7 @@ import pickle
 import torch
 from transformers import *
 
-from lib.dataset.hico_hake import HicoHake
+from lib.dataset.hicodet_hake import HicoDetHake
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
             print('Remote debugging failed.')
             raise
 
-    hh = HicoHake()
+    hh = HicoDetHake()
     sentences = [f'People {hh.actions[a]} the {hh.objects[o]}' for a, o in hh.interactions if hh.actions[a] != hh.null_action]
     cache_fn = 'cache/bert_hoi_embs.pkl'
 

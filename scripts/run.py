@@ -11,13 +11,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config import cfg
+from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
-
-from lib.dataset.hico_hake import HicoHakeSplit
 from lib.dataset.vcoco import VCocoSplit
-from lib.eval.evaluator_hico import EvaluatorHico
-from lib.eval.evaluator_roi import EvaluatorROI
-from lib.eval.part_evaluator_hh import PartEvaluatorHH
+from lib.eval.evaluator_vcoco_roi import EvaluatorVCocoROI
+from lib.eval.vsrl_eval import VCOCOeval, pkl_from_predictions
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.radam import RAdam
 from lib.timer import Timer
@@ -67,8 +65,8 @@ class Launcher:
                 print('End train:', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         except:
             print(f'Exception raised. Removing "{cfg.output_path}".')
-            shutil.rmtree(cfg.output_path)
             try:
+                shutil.rmtree(cfg.output_path)
                 os.removedirs(os.path.split(cfg.output_path.rstrip('/'))[0])
             except OSError:
                 pass
@@ -97,12 +95,12 @@ class Launcher:
                     pass
 
         if cfg.ds == 'hh':
-            ds_class = HicoHakeSplit
+            ds_class = HicoDetHakeSplit
         elif cfg.ds == 'vcoco':
             ds_class = VCocoSplit
         else:
             raise ValueError('Unknown dataset.')
-        splits = ds_class.get_splits(object_inds=inds['obj'], action_inds=inds['act'], use_precomputed_data=True)
+        splits = ds_class.get_splits(object_inds=inds['obj'], action_inds=inds['act'], val_ratio=cfg.val_ratio, use_precomputed_data=True)
         self.train_split, self.test_split = splits['train'], splits['test']
 
         # Model
@@ -168,7 +166,7 @@ class Launcher:
                                       batch_size=train_loader.batch_size or train_loader.batch_sampler.batch_size)
         val_stats = RunningStats(split='val', num_batches=len(val_loader),
                                  batch_size=val_loader.batch_size or val_loader.batch_sampler.batch_size, history_window=len(val_loader))
-        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=cfg.batch_size, history_window=len(self.test_split))
+        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=cfg.batch_size, history_window=len(test_loader))
 
         try:
             cfg.save()
@@ -178,7 +176,7 @@ class Launcher:
                             'state_dict': self.detector.state_dict()},
                            cfg.checkpoint_file)
                 self.detector.eval()
-                all_predictions = self.eval_epoch(None, test_loader, test_stats)
+                all_predictions = self.eval_epoch(epoch_idx=None, data_loader=test_loader, dataset=self.test_split, stats=test_stats)
             else:
                 lowest_val_loss = np.inf
                 for epoch in range(self.start_epoch, cfg.num_epochs):
@@ -209,7 +207,7 @@ class Launcher:
                                    cfg.best_model_file)
 
                     if epoch % cfg.eval_interval == 0 or epoch + 1 == cfg.num_epochs:
-                        all_predictions = self.eval_epoch(epoch, test_loader, test_stats)
+                        all_predictions = self.eval_epoch(epoch_idx=epoch, data_loader=test_loader, dataset=self.test_split, stats=test_stats)
 
                     # if any([pg['lr'] <= 1e-6 for pg in optimizer.param_groups]):
                     #     print('Exiting training early.', flush=True)
@@ -278,7 +276,7 @@ class Launcher:
 
         return loss
 
-    def eval_epoch(self, epoch_idx, data_loader: DataLoader, stats: RunningStats):
+    def eval_epoch(self, epoch_idx, data_loader: DataLoader, dataset: HoiDatasetSplit, stats: RunningStats):
         self.detector.eval()
 
         try:
@@ -316,7 +314,7 @@ class Launcher:
 
                 # if batch_idx % 20 == 0:
                 #     torch.cuda.empty_cache()  # Otherwise after some epochs the GPU goes out of memory. Seems to be a bug in PyTorch 0.4.1.
-                if batch_idx % 100 == 0:
+                if batch_idx % 500 == 0:
                     stats.print_times(epoch_idx, batch=batch_idx, curr_iter=self.curr_train_iter)
 
             if watched_values:
@@ -327,87 +325,96 @@ class Launcher:
         for p in all_predictions:
             pr = Prediction(p)
             do_part_eval = do_part_eval or pr.part_state_scores is not None
-            do_hoi_eval = do_hoi_eval or pr.hoi_scores is not None
+            do_hoi_eval = do_hoi_eval or pr.output_scores is not None
             if do_part_eval and do_hoi_eval:
                 break
 
         metric_dict = {}
         if do_part_eval:
+            raise NotImplementedError
+            # TODO
             print('Part states:')
-            part_evaluator = PartEvaluatorHH(data_loader.dataset)
+            part_evaluator = PartEvaluatorHH(dataset)
             part_evaluator.evaluate_predictions(all_predictions)
             part_evaluator.save(cfg.eval_res_file_format % 'part')
             part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
             metric_dict.update(part_metric_dict)
 
             null_interactions = np.flatnonzero([states[-1] for states in self.test_split.full_dataset.states_per_part]).tolist()
-            part_interactiveness_metric_dict = part_evaluator.output_metrics(interactions_to_keep=null_interactions, compute_pos=False)
+            part_interactiveness_metric_dict = part_evaluator.output_metrics(compute_pos=False, to_keep=null_interactions)
             part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
             assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
             metric_dict.update(part_interactiveness_metric_dict)
 
         if do_hoi_eval:
-            test_interactions = None
+            if cfg.vceval:
+                assert isinstance(dataset, VCocoSplit)
+                evaluator = VCOCOeval(vsrl_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'vcoco', 'vcoco_test.json'),
+                                      coco_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'instances_vcoco_all_2014.json'),
+                                      split_file=os.path.join(cfg.data_root, 'V-COCO', 'splits', 'vcoco_test.ids')
+                                      )
 
-            print('Interactions (all):')
-            if cfg.ds == 'hh':
-                evaluator = EvaluatorHico(data_loader.dataset)
-            elif cfg.ds == 'vcoco':
-                evaluator = EvaluatorROI(data_loader.dataset)
+                det_file = os.path.join(cfg.output_path, 'vcoco_pred.pkl')
+                pkl_from_predictions(dict_predictions=all_predictions, dataset=dataset, filename=det_file)
+                evaluator._do_eval(det_file, ovr_thresh=0.5)
             else:
-                raise ValueError
-            evaluator.evaluate_predictions(all_predictions)
-            evaluator.save(cfg.eval_res_file_format % 'hoi')
-            hoi_metric_dict = evaluator.output_metrics(interactions_to_keep=test_interactions)
-            hoi_metric_dict = {f'{k}': v for k, v in hoi_metric_dict.items()}
-            assert not (set(hoi_metric_dict.keys()) & set(metric_dict.keys()))
-            metric_dict.update(hoi_metric_dict)
+                print('Interactions (all):')
+                if cfg.ds == 'hh':
+                    raise NotImplementedError
+                    # TODO
+                elif cfg.ds == 'vcoco':
+                    evaluator = EvaluatorVCocoROI(dataset)
+                else:
+                    raise ValueError
+                evaluator.evaluate_predictions(all_predictions)
+                hoi_metric_dict = evaluator.output_metrics()
+                hoi_metric_dict = {f'{k}': v for k, v in hoi_metric_dict.items()}
+                assert not (set(hoi_metric_dict.keys()) & set(metric_dict.keys()))
+                metric_dict.update(hoi_metric_dict)
 
-            null_interactions = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
-            interactiveness_metric_dict = evaluator.output_metrics(interactions_to_keep=null_interactions, compute_pos=False)
-            interactiveness_metric_dict = {f'HOI_interactiveness_{k}': v for k, v in interactiveness_metric_dict.items()}
-            assert not (set(interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
-            metric_dict.update(interactiveness_metric_dict)
+                null_interactions = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
+                interactiveness_metric_dict = evaluator.output_metrics(compute_pos=False, to_keep=null_interactions)
+                interactiveness_metric_dict = {f'HOI_interactiveness_{k}': v for k, v in interactiveness_metric_dict.items()}
+                assert not (set(interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
+                metric_dict.update(interactiveness_metric_dict)
 
-            if cfg.seenf >= 0:
-                def get_metrics(_interactions):
-                    if test_interactions is not None:
-                        _interactions = set(_interactions) & set(test_interactions)
-                    return evaluator.output_metrics(interactions_to_keep=sorted(_interactions))
+                if cfg.seenf >= 0:
+                    def get_metrics(_interactions):
+                        return evaluator.output_metrics(to_keep=sorted(_interactions))
 
-                detailed_metric_dicts = []
+                    detailed_metric_dicts = []
 
-                print('Interactions (seen):')
-                seen_interactions = self.train_split.seen_interactions
-                detailed_metric_dicts.append({f'tr_{k}': v for k, v in get_metrics(seen_interactions).items()})
+                    print('Interactions (seen):')
+                    seen_interactions = self.train_split.seen_interactions
+                    detailed_metric_dicts.append({f'tr_{k}': v for k, v in get_metrics(seen_interactions).items()})
 
-                print('Interactions (unseen):')
-                unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.seen_interactions)
-                detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
+                    print('Interactions (unseen):')
+                    unseen_interactions = set(range(self.train_split.full_dataset.num_interactions)) - set(self.train_split.seen_interactions)
+                    detailed_metric_dicts.append({f'zs_{k}': v for k, v in get_metrics(unseen_interactions).items()})
 
-                oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
-                unseen_objects = np.array(sorted(set(range(self.train_split.dims.O)) - set(self.train_split.seen_objects)))
-                unseen_actions = np.array(sorted(set(range(self.train_split.dims.A)) - set(self.train_split.seen_actions)))
+                    oa_mat = self.train_split.full_dataset.oa_pair_to_interaction
+                    unseen_objects = np.array(sorted(set(range(self.train_split.dims.O)) - set(self.train_split.seen_objects)))
+                    unseen_actions = np.array(sorted(set(range(self.train_split.dims.A)) - set(self.train_split.seen_actions)))
 
-                if unseen_objects.size > 0:
-                    print('Unseen object, seen action:')
-                    uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.seen_actions]).tolist()) - {-1}
-                    detailed_metric_dicts.append({f'zs_uo-sa_{k}': v for k, v in get_metrics(uo_sa_interactions).items()})
+                    if unseen_objects.size > 0:
+                        print('Unseen object, seen action:')
+                        uo_sa_interactions = set(np.unique(oa_mat[unseen_objects, :][:, self.train_split.seen_actions]).tolist()) - {-1}
+                        detailed_metric_dicts.append({f'zs_uo-sa_{k}': v for k, v in get_metrics(uo_sa_interactions).items()})
 
-                if unseen_actions.size > 0:
-                    print('Seen object, unseen action:')
-                    so_ua_interactions = set(np.unique(oa_mat[self.train_split.seen_objects, :][:, unseen_actions]).tolist()) - {-1}
-                    detailed_metric_dicts.append({f'zs_so-ua_{k}': v for k, v in get_metrics(so_ua_interactions).items()})
+                    if unseen_actions.size > 0:
+                        print('Seen object, unseen action:')
+                        so_ua_interactions = set(np.unique(oa_mat[self.train_split.seen_objects, :][:, unseen_actions]).tolist()) - {-1}
+                        detailed_metric_dicts.append({f'zs_so-ua_{k}': v for k, v in get_metrics(so_ua_interactions).items()})
 
-                if unseen_objects.size > 0 and unseen_actions.size > 0:
-                    print('Unseen object, unseen action:')
-                    uo_ua_interactions = set(np.unique(oa_mat[unseen_objects, :][:, unseen_actions]).tolist()) - {-1}
-                    detailed_metric_dicts.append({f'zs_uo-ua_{k}': v for k, v in get_metrics(uo_ua_interactions).items()})
+                    if unseen_objects.size > 0 and unseen_actions.size > 0:
+                        print('Unseen object, unseen action:')
+                        uo_ua_interactions = set(np.unique(oa_mat[unseen_objects, :][:, unseen_actions]).tolist()) - {-1}
+                        detailed_metric_dicts.append({f'zs_uo-ua_{k}': v for k, v in get_metrics(uo_ua_interactions).items()})
 
-                for d in detailed_metric_dicts:
-                    for k, v in d.items():
-                        assert k not in metric_dict
-                        metric_dict[k] = v
+                    for d in detailed_metric_dicts:
+                        for k, v in d.items():
+                            assert k not in metric_dict
+                            metric_dict[k] = v
 
         stats.update_stats({'metrics': {k: np.mean(v) for k, v in metric_dict.items()}})
         stats.log_stats(self.curr_train_iter, epoch_idx)
@@ -417,9 +424,9 @@ class Launcher:
 
     def evaluate(self):
         test_loader = self.test_split.get_loader(batch_size=cfg.batch_size)
-        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=1, history_window=len(self.test_split),
+        test_stats = RunningStats(split='test', num_batches=len(test_loader), batch_size=1, history_window=len(test_loader),
                                   tboard_log=False)
-        all_predictions = self.eval_epoch(None, test_loader, test_stats)
+        all_predictions = self.eval_epoch(epoch_idx=None, data_loader=test_loader, dataset=self.test_split, stats=test_stats)
         return all_predictions
 
     def data_loader_generator(self, data_loader, epoch_idx):

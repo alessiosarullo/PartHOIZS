@@ -7,11 +7,11 @@ from sklearn.metrics import average_precision_score
 from config import cfg
 from lib.models.abstract_model import Prediction
 from lib.dataset.hico_hake import HicoHakeSplit
-from lib.eval.eval_utils import MetricFormatter, sort_and_filter
+from lib.eval.eval_utils import Evaluator, MetricFormatter, sort_and_filter
 from lib.timer import Timer
 
 
-class PartEvaluatorHH:
+class PartEvaluatorHH(Evaluator):
     def __init__(self, dataset_split: HicoHakeSplit):
         super().__init__()
         self.dataset_split = dataset_split  # type: HicoHakeSplit
@@ -33,7 +33,7 @@ class PartEvaluatorHH:
         with open(fn, 'wb') as f:
             pickle.dump({'metrics': self.metrics}, f)
 
-    def evaluate_predictions(self, predictions: List[Dict]):
+    def evaluate_predictions(self, predictions: List[Dict], **kwargs):
         assert len(predictions) == self.dataset_split.num_images, (len(predictions), self.dataset_split.num_images)
 
         Timer.get('Eval epoch').tic()
@@ -54,9 +54,9 @@ class PartEvaluatorHH:
 
         Timer.get('Eval epoch').toc()
 
-    def output_metrics(self, sort=False, interactions_to_keep=None, compute_pos=True):
+    def output_metrics(self, to_keep=None, compute_pos=True, sort=False):
         mf = MetricFormatter()
-        metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep)
+        metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=to_keep)
 
         # Same, but with null interaction filtered
         if compute_pos:

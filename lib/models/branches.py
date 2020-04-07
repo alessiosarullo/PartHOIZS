@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeSplit
+from lib.dataset.hoi_dataset_split import HoiDatasetSplit
+from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.utils import interactions_to_mat
 from lib.dataset.hoi_dataset_split import Labels, Minibatch
 from lib.dataset.word_embeddings import WordEmbeddings
@@ -39,9 +40,9 @@ class Cache:
 
 
 class AbstractModule(nn.Module):
-    def __init__(self, dataset: HicoHakeSplit, cache: Cache, repr_dim, **kwargs):
+    def __init__(self, dataset: HoiDatasetSplit, cache: Cache, repr_dim, **kwargs):
         super().__init__()
-        self.dataset = dataset  # type: HicoHakeSplit
+        self.dataset = dataset  # type: HoiDatasetSplit
         self.dims = self.dataset.dims
         self.cache = cache
         self.repr_dim = repr_dim
@@ -85,7 +86,7 @@ class AbstractBranch(AbstractModule):
         else:
             ex_data, im_data, person_data, obj_data = x.ex_data, x.im_data, x.person_data, x.obj_data
         dims = self.dims
-        P, M, K_coco, K_hake, O, F_kp, F_obj, D = dims.P, dims.M, dims.K_coco, dims.K_hake, dims.O, dims.F_kp, dims.F_obj, dims.D
+        P, M, K, B, O, F_kp, F_obj, D = dims.P, dims.M, dims.K, dims.B, dims.O, dims.F_kp, dims.F_obj, dims.D
 
         N = None
         if ex_data is not None:
@@ -100,9 +101,9 @@ class AbstractBranch(AbstractModule):
             N = N if N is not None else kp_feats.shape[0]
             assert ppl_boxes.shape == (N, P, 4)
             assert ppl_feats.shape == (N, P, F_kp)
-            assert coco_kps.shape == (N, P, K_coco, 3)
-            assert kp_boxes.shape == (N, P, K_hake, 5)
-            assert kp_feats.shape == (N, P, K_hake, F_kp)
+            assert coco_kps.shape == (N, P, K, 3)
+            assert kp_boxes.shape == (N, P, B, 5)
+            assert kp_feats.shape == (N, P, B, F_kp)
 
         if obj_data is not None:
             obj_boxes, obj_scores, obj_feats = obj_data[:3]
@@ -157,12 +158,12 @@ class AbstractBranch(AbstractModule):
 class SpatialConfigurationModule(AbstractModule):
     def __init__(self, sp_ch=64, pose_ch=32, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        K_hake, F_kp, F_obj, D = self.dims.K_hake, self.dims.F_kp, self.dims.F_obj, self.dims.D
+        B, F_kp, F_obj, D = self.dims.B, self.dims.F_kp, self.dims.F_obj, self.dims.D
         d = D // 4
         self.repr_dim = d * d * (sp_ch // 2 + pose_ch // 2)
 
         self.sp_map_module = nn.Sequential(
-            nn.Conv2d(in_channels=2 + K_hake, out_channels=sp_ch, kernel_size=(5, 5), padding=2),
+            nn.Conv2d(in_channels=2 + B, out_channels=sp_ch, kernel_size=(5, 5), padding=2),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=(2, 2)),
             nn.Conv2d(in_channels=sp_ch, out_channels=sp_ch // 2, kernel_size=(5, 5), padding=2),
@@ -251,6 +252,7 @@ class SpatialConfigurationBranch(AbstractBranch):
 class PartUninteractivenessBranch(SpatialConfigurationBranch):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.dataset = self.dataset  # type: HicoDetHakeSplit
 
     def _get_label_inds(self):
         return np.array([states[-1] for states in self.dataset.full_dataset.states_per_part])  # null part states
@@ -400,7 +402,7 @@ class ZSBranch(AbstractBranch):
         super().__init__(*args, **kwargs)
         self.ld = self._get_label_data(label_type=label_type)
 
-        self._add_mlp(name='repr', input_dim=self.dims.F_img, output_dim=self.repr_dim)
+        self._add_mlp(name='repr', input_dim=self.dims.F_img + self.dims.F_kp + self.dims.F_obj, output_dim=self.repr_dim)
         self._add_linear_layer(name='dir', input_dim=self.repr_dim, output_dim=self.ld.num_classes)
 
         if self.zs_enabled:
@@ -507,7 +509,9 @@ class ZSBranch(AbstractBranch):
 
     def _get_repr(self, x: Minibatch):
         img_feats = x.ex_data[1]
-        repr = self.repr_mlps['repr'](img_feats)
+        ppl_feats = x.person_data[1].squeeze(dim=1)
+        obj_feats = x.obj_data[2].squeeze(dim=1)
+        repr = self.repr_mlps['repr'](torch.cat([img_feats, ppl_feats, obj_feats], dim=1))
         return repr
 
     def _get_dir_predictor(self):

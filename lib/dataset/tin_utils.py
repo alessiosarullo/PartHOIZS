@@ -175,7 +175,7 @@ def get_next_sp_with_pose(human_boxes, object_boxes, human_poses, *, size=32, fi
     :return:
     """
     assert human_boxes.ndim == object_boxes.ndim == human_poses.ndim - 1 == 2 and (part_boxes is None or part_boxes.ndim == 3)
-    P, K_coco = human_poses.shape[:2]
+    P, K = human_poses.shape[:2]
     M = object_boxes.shape[0]
     assert human_boxes.shape[0] == P and (part_boxes is None or part_boxes.shape[0] == P)
     assert human_boxes.shape[-1] == object_boxes.shape[-1] == 4 and (part_boxes is None or part_boxes.shape[-1] == 4)

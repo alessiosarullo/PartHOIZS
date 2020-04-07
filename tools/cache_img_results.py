@@ -8,7 +8,7 @@ from torchvision import transforms
 from torchvision.models import resnet152
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeSplit
+from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.vcoco import VCocoSplit
 
 
@@ -32,7 +32,7 @@ def forward(model, x):
 
 
 def save_feats():
-    sys.argv += ['--val_ratio', '0']  # TODO choice of HICO or VCOCO in args
+    # sys.argv += []  # TODO choice of HICO or VCOCO in args
     cfg.parse_args(fail_if_missing=False)
 
     if cfg.debug:
@@ -46,7 +46,7 @@ def save_feats():
             raise
 
     if False:
-        splits = HicoHakeSplit.get_splits()
+        splits = HicoDetHakeSplit.get_splits()
     else:
         splits = VCocoSplit.get_splits()
 

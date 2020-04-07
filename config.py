@@ -30,6 +30,7 @@ class Configs:
         self.resume = False
         self.save_dir = ''
         self.seenf = -1
+        self.vceval = False
 
         ##########################################
         # Data options                           #
@@ -37,6 +38,7 @@ class Configs:
 
         # Null/background
         self.no_filter_bg_only = False
+        self.hoi_bg_ratio = 3
 
         # Image
         self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
@@ -44,7 +46,7 @@ class Configs:
         self.max_obj = 3
 
         # Dataset
-        self.ds = 'vcoco'
+        self.ds = ''
         self.val_ratio = 0.1
 
         ##########################################
@@ -119,7 +121,7 @@ class Configs:
         self.momentum = 0.9
         self.l2_coeff = 5e-4
         self.grad_clip = 5.0
-        self.num_epochs = 80
+        self.num_epochs = 40
 
         # Learning rate. A value of 0 means that option is disabled.
         self.lr = 0.0

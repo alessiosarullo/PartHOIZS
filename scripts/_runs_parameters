@@ -1,0 +1,5 @@
+--model hoi --save_dir /home/alex/PartHOIZS/output/hoi/zs4/nopart/2020-04-00_00-00-00_FAKE
+    --no_load_memory --ds hh --no_part --eval_interval 10 --seenf 4
+
+--model act --save_dir output/act/vcoco_nozs/no_part/2020-04-00_00-00-00_FAKE
+    --ds vcoco --eval_interval 10 --no_part --no_obj

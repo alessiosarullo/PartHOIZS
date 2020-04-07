@@ -3,7 +3,7 @@ import pickle
 import numpy as np
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHake
+from lib.dataset.hicodet_hake import HicoDetHake
 
 
 

@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 
 from config import cfg
-from lib.dataset.hico_hake import HicoHakeSplit
-from lib.dataset.hoi_dataset_split import Minibatch
+from lib.dataset.hoi_dataset_split import Minibatch, HoiDatasetSplit
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, \
@@ -18,12 +17,13 @@ class AbstractTriBranchModel(AbstractModel):
     def get_cline_name(cls) -> str:
         raise NotImplementedError
 
-    def __init__(self, dataset: HicoHakeSplit, part_only=False, **kwargs):
+    def __init__(self, dataset: HoiDatasetSplit, part_only=False, **kwargs):
         super().__init__(dataset, **kwargs)
         assert not (cfg.no_part and part_only)
         self.dataset = dataset
         self.zs_enabled = (cfg.seenf >= 0)
         self.part_only = part_only
+        self.predict_act = False
 
         word_embs = WordEmbeddings(source='glove', dim=300, normalize=True)
         self.cache = Cache(word_embs=word_embs)
@@ -96,17 +96,23 @@ class AbstractTriBranchModel(AbstractModel):
             if 'act' in self.branches:
                 act_scores = self.branches['act'](x, inference)
                 hoi_scores.append(act_scores[:, interactions[:, 0]])
+            else:
+                act_scores = None
 
             if 'hoi' in self.branches:
                 hoi_scores.append(self.branches['hoi'](x, inference))
 
             assert hoi_scores
-            prediction.hoi_scores = np.prod(np.stack(hoi_scores, axis=0), axis=0)
+            if self.predict_act:
+                assert act_scores is not None
+                prediction.output_scores = act_scores
+            else:
+                prediction.output_scores = np.prod(np.stack(hoi_scores, axis=0), axis=0)
 
             if len(x.ex_data) > 2:
                 prediction.obj_boxes = x.ex_data[2]
                 prediction.ho_pairs = x.ex_data[3]
-                assert prediction.ho_pairs.shape[0] == prediction.hoi_scores.shape[0]
+                assert prediction.ho_pairs.shape[0] == prediction.output_scores.shape[0]
         return prediction
 
     def _forward(self, x: Minibatch, inference=True):
@@ -118,7 +124,7 @@ class PartModel(AbstractTriBranchModel):
     def get_cline_name(cls):
         return 'part'
 
-    def __init__(self, dataset: HicoHakeSplit, **kwargs):
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
         super().__init__(dataset, part_only=True, **kwargs)
 
 
@@ -127,8 +133,9 @@ class ActModel(AbstractTriBranchModel):
     def get_cline_name(cls):
         return 'act'
 
-    def __init__(self, dataset: HicoHakeSplit, **kwargs):
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
         super().__init__(dataset, **kwargs)
+        self.predict_act = True
 
     def _init_act_branch(self):
         self.branches['act'] = ZSGCBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dim=cfg.repr_dim)
@@ -156,7 +163,7 @@ class HoiModel(AbstractTriBranchModel):
     def get_cline_name(cls):
         return 'hoi'
 
-    def __init__(self, dataset: HicoHakeSplit, **kwargs):
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
         super().__init__(dataset, **kwargs)
 
     def _init_hoi_branch(self):

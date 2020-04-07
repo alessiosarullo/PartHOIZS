@@ -37,7 +37,7 @@ from config import cfg
 from lib.models.abstract_model import Prediction
 from lib.dataset.hico_hake import HicoHakeSplit
 from lib.dataset.utils import interactions_to_mat
-from lib.dataset.hico_hake import HicoHake
+from lib.dataset.hicodet_hake import HicoDetHake
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub, plot_mat
 from analysis.show_embs import run_and_save
@@ -68,7 +68,7 @@ class Analyser:
         predict_hoi_scores = np.full_like(self.gt_hoi_labels, fill_value=np.nan)
         for i, res in enumerate(all_predictions):
             prediction = Prediction(res)
-            predict_hoi_scores[i, :] = prediction.hoi_scores
+            predict_hoi_scores[i, :] = prediction.output_scores
         assert not np.any(np.isnan(predict_hoi_scores)) and np.all(predict_hoi_scores >= 0)
         hoi_predictions = (predict_hoi_scores >= self.hoi_score_thr)
 
@@ -115,7 +115,7 @@ def stats():
     seen_act_inds = inds_dict['train']['act']
     seen_obj_inds = inds_dict['train']['obj']
 
-    hh = HicoHake()
+    hh = HicoDetHake()
     test_split = HicoHakeSplit(split='test', full_dataset=hh)
     analyser = Analyser(dataset=test_split, hoi_score_thr=args.hoi_thr)
 
@@ -233,7 +233,7 @@ def print_predictions():
 
         # Interactions
         hoi_anns = (gt_labels[idx, :] > 0)
-        hoi_scores = np.squeeze(prediction.hoi_scores, axis=0)
+        hoi_scores = np.squeeze(prediction.output_scores, axis=0)
         inds = hoi_scores.argsort()[::-1]
         hoi_pred_str = []
         hoi_misses_str = []
