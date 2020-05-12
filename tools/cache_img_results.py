@@ -1,5 +1,3 @@
-import sys
-
 import h5py
 import numpy as np
 import torch
@@ -8,9 +6,7 @@ from torchvision import transforms
 from torchvision.models import resnet152
 
 from config import cfg
-from lib.dataset.hicodet_hake import HicoDetHakeSplit
-from lib.dataset.vcoco import VCocoSplit
-
+from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 
 
 def forward(model, x):
@@ -32,7 +28,6 @@ def forward(model, x):
 
 
 def save_feats():
-    # sys.argv += []  # TODO choice of HICO or VCOCO in args
     cfg.parse_args(fail_if_missing=False)
 
     if cfg.debug:
@@ -45,10 +40,18 @@ def save_feats():
             print('Remote debugging failed.')
             raise
 
-    if False:
-        splits = HicoDetHakeSplit.get_splits()
+    ds = 3
+    if ds == 1:
+        from lib.dataset.hicodet_hake import HicoDetHakeSplit as DsSplit
+    elif ds == 2:
+        from lib.dataset.vcoco import VCocoSplit as DsSplit
+    elif ds == 3:
+        from lib.dataset.cocoa import CocoaSplit as DsSplit
     else:
-        splits = VCocoSplit.get_splits()
+        raise ValueError
+
+    print(DsSplit)
+    splits = DsSplit.get_splits()
 
     img_transform = transforms.Compose([
         transforms.Resize(256),
@@ -66,13 +69,13 @@ def save_feats():
         print('!!!!!!!!!!!!!!!!! Running on CPU!')
     vm.eval()
     for split in ['train', 'test']:
-        hds = splits[split]
+        hds = splits[split]  # type: HoiDatasetSplit
 
         precomputed_feats_fn = cfg.precomputed_feats_format % ('new_cached_file', 'resnet152', split)
         with h5py.File(precomputed_feats_fn, 'w') as feat_file:
 
             all_img_feats, all_cl_unbounded_scores = [], []
-            num_imgs = len(hds)
+            num_imgs = hds.num_images
             for img_id in range(num_imgs):
                 img = hds.get_img(img_id)
                 img = img_transform(img).to(device=device)

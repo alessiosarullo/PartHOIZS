@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 
 from analysis.visualise_utils import Visualizer
 from analysis.utils import analysis_hub
-from lib.dataset.vcoco import VCoco, VCocoSplit
+from lib.dataset.vcoco import VCoco, VCocoSplit, GTImgData
 
 from lib.dataset.tin_utils import get_next_sp_with_pose
 from config import cfg
@@ -85,6 +85,7 @@ def vis_vcoco():
 
     all_t = 0
     for idx, gt_im_data in zip(img_inds, dssplit.all_gt_img_data):
+        gt_im_data = gt_im_data  # type: GTImgData
         fname = gt_im_data.filename
         imid = int(fname.split('_')[-1].split('.')[0])
         # if fname not in ['COCO_train2014_000000047192.jpg',
@@ -122,11 +123,10 @@ def vis_vcoco():
             visualizer.overlay_instances(labels=gt_box_labels, boxes=img_boxes, alpha=0.7, line_style='--', color='red')
 
         gt_str = []
-        for hp, l in zip(img_hoi_pairs, img_act_labels):
+        for hp, act_ind in zip(img_hoi_pairs, img_act_labels):
             obj_idx = hp[-1]
             if np.isnan(obj_idx):
                 continue
-            act_ind = np.flatnonzero(l).item()  # labels are one-hot encoded
             obj_ind = int(img_box_classes[int(obj_idx)])
             gt_str.append(f'{actions_str[act_ind]} {objects_str[obj_ind]}')
         print(f'\t\t{", ".join(gt_str)}')

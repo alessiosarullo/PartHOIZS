@@ -8,7 +8,7 @@ from config import cfg
 
 
 class WordEmbeddings:
-    def __init__(self, source='numberbatch', dim=None, normalize=False):
+    def __init__(self, source='glove', dim=None, normalize=True):
         """
         Attributes:
             embeddings: [array] NxD matrix consisting of N D-dimensional embeddings
@@ -57,7 +57,7 @@ class WordEmbeddings:
                 return np.zeros_like(self._embeddings[0, :])
         return self._embeddings[idx, :]
 
-    def get_embeddings(self, words, retry='avg'):
+    def get_embeddings(self, words, retry='avg', del_on_miss=False, verbose=True):
         # vectors = np.random.standard_normal((len(words), self.dim))  # This is what they do in NeuralMotifs, but I'm not sure it's a good idea.
         vectors = np.zeros((len(words), self.dim))
         fails = []
@@ -84,7 +84,7 @@ class WordEmbeddings:
                     if not self.normalised:
                         raise ValueError('Average embeddings requires normalisation.')
                     embs = [self.embedding(token, none_on_miss=True) for token in tokens]
-                    if embs:
+                    if all([e is not None for e in embs]):
                         emb = sum(embs) / len(embs)
                         emb_norm = np.linalg.norm(emb)
                         emb = emb / emb_norm if emb_norm > 0 else emb
@@ -96,16 +96,24 @@ class WordEmbeddings:
             if emb is not None:
                 vectors[i] = emb
             else:
-                fails.append(word)
+                fails.append(i)
 
-        if retry:
-            for w in fails:
-                if not w.startswith('_'):
-                    del replacements[w]
-        if replacements:
-            print('These words were not found and have been replaced: %s.' % ', '.join(['%s -> %s' % (k, v) for k, v in replacements.items()]))
-        if fails:
-            print('Default embedding will be used for %s.' % ', '.join(fails))
+        if fails and del_on_miss:
+            vectors = vectors[np.array(sorted(set(range(len(words))) - set(fails))), :]
+
+        if verbose:
+            if retry:
+                for i in fails:
+                    w = words[i]
+                    if not w.startswith('_') and w in replacements:
+                        del replacements[w]
+            if replacements:
+                print('These words were not found and have been replaced: %s.' % ', '.join(['%s -> %s' % (k, v) for k, v in replacements.items()]))
+            if fails:
+                if del_on_miss:
+                    print('No embedding found for %s.' % ', '.join([words[i] for i in fails]))
+                else:
+                    print('Default embedding will be used for %s.' % ', '.join([words[i] for i in fails]))
         return vectors.astype(np.float32, copy=False)
 
     def load(self, source, dim):

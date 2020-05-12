@@ -1,5 +1,12 @@
 --model hoi --save_dir /home/alex/PartHOIZS/output/hoi/zs4/nopart/2020-04-00_00-00-00_FAKE
     --no_load_memory --ds hh --no_part --eval_interval 10 --seenf 4
 
---model act --save_dir output/act/vcoco_nozs/no_part/2020-04-00_00-00-00_FAKE
+--model act --save_dir output/act/vcoco_nozs/nopart/2020-04-00_00-00-00_FAKE
     --ds vcoco --eval_interval 10 --no_part --no_obj
+
+# This one remotely
+--model part --save_dir hico/standard/2020-04-08_15-14-11_SINGLE --ds hh --eval_interval 10
+
+--model act --save_dir output/act/vcoco_nozs/nopart/2020-04-00_00-00-00_FAKE
+    --pbf /home/alex/PartHOIZS/output/part/hico/standard/2020-04-09_12-02-27_SINGLE/best.tar
+    --ds vcoco --eval_interval 10 --no_obj

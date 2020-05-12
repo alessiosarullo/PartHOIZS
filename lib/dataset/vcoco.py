@@ -20,9 +20,7 @@ class VCocoSplit(HoiDatasetSplit):
         return VCoco()
 
     def _init_feat_provider(self, **kwargs):
-        return HoiInstancesFeatProvider(ds=self, ds_name='vcoco', labels_are_actions=True,
-                                        obj_mapping=np.arange(1, self.full_dataset.num_objects + 1),
-                                        **kwargs)
+        return HoiInstancesFeatProvider(ds=self, ds_name='vcoco', obj_mapping=np.arange(self.full_dataset.num_objects), **kwargs)
 
     @property
     def dims(self) -> Dims:
@@ -33,7 +31,8 @@ class VCocoSplit(HoiDatasetSplit):
             F_img = self._feat_provider.pc_img_feats.shape[1]
             F_kp = self._feat_provider.kp_net_dim
             F_obj = self._feat_provider.obj_feats_dim
-            dims = dims._replace(B=B, F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+            F_ex = self._feat_provider.ex_feat_dim
+            dims = dims._replace(B=B, F_img=F_img, F_ex=F_ex, F_kp=F_kp, F_obj=F_obj)
         return dims
 
 
@@ -59,6 +58,8 @@ class VCoco(HoiDataset):
                         if obj_id > 0:
                             interactions.add((action_index[f'{act_name}_{driver.interaction_class_data[a]["role_name"][1 + r]}'],
                                               driver.object_annotations[obj_id]['obj']))
+        for j in range(len(object_classes)):
+            interactions.add((0, j))  # make sure it is possible NOT to interact with any object
         interactions = np.unique(np.array(sorted(interactions)), axis=0)
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
@@ -75,6 +76,10 @@ class VCoco(HoiDataset):
         split = fname.split('_')[-2]
         assert split in ['train2014', 'val2014', 'test2014'], split
         return os.path.join(self._img_dir, split, fname)
+
+    @property
+    def labels_are_actions(self) -> bool:
+        return True
 
     def compute_img_data(self, split, driver) -> List[GTImgData]:
         driver = driver  # type: VCocoDriver
@@ -140,12 +145,10 @@ class VCoco(HoiDataset):
             im_box_classes = np.array(im_box_classes)
             im_ho_pairs = np.stack(im_ho_pairs, axis=0)
             im_actions = np.array(im_actions)
-            im_actions_one_hot = np.zeros((im_actions.shape[0], self.num_actions))
-            im_actions_one_hot[np.arange(im_actions.shape[0]), im_actions] = 1
 
             split_data.append(GTImgData(filename=driver.image_infos[img_id]['file_name'],
                                         img_size=np.array([driver.image_infos[img_id]['width'], driver.image_infos[img_id]['height']]),
-                                        boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_actions_one_hot))
+                                        boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_actions))
         return split_data
 
 

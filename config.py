@@ -31,13 +31,15 @@ class Configs:
         self.save_dir = ''
         self.seenf = -1
         self.vceval = False
+        self.eval_split = 'test'
+        self._eval_only = None
 
         ##########################################
         # Data options                           #
         ##########################################
 
         # Null/background
-        self.no_filter_bg_only = False
+        self.include_bg_only = False
         self.hoi_bg_ratio = 3
 
         # Image
@@ -49,6 +51,9 @@ class Configs:
         self.ds = ''
         self.val_ratio = 0.1
 
+        # ZS graphs
+        self.oracle = False
+
         ##########################################
         # Model options                          #
         ##########################################
@@ -56,15 +61,15 @@ class Configs:
 
         # Architecture
         self.dropout = 0.5
-        self.repr_dim = 1024
-        self.hoi_repr_dim = 256
+        self.repr_dim0 = 1024
+        self.repr_dim1 = 256
         self.swish = False
         self.wrap = False
 
         # General
         self.act = False
         self.train_null_act = False
-        self.no_obj = False  # no object branch
+        self.obj = False  # add object branch
 
         # Loss
         self.fl_gamma = 0.0  # gamma in focal loss
@@ -80,6 +85,11 @@ class Configs:
         self.awsu = 0.0
         self.awsu_fp = 0.0
         self.agcnr = 0.0
+        #
+        self.awsln = 5.0
+        self.awsls = 5.0
+        self.awslt = 0.5
+        self.awsl_uonly = False
         # Regularisation
         self.grm = 0.3  # margin in graph regularisation
         self.grg = 0  # gamma in graph regularisation
@@ -92,6 +102,7 @@ class Configs:
 
         # ZS specific
         self.merge_dir = False
+        self.no_dir = False
 
         # ZS GCN specific
         self.gcswish = False
@@ -107,7 +118,6 @@ class Configs:
         self.pbf = ''  # part branch save file (load pre-trained part branch from here)
         self.no_part = False
         self.sbmar = 0.0  # small boxes min area ratio
-        self.part_repr_dim = 256
 
         ##########################################
         # Optimiser options                      #
@@ -121,7 +131,7 @@ class Configs:
         self.momentum = 0.9
         self.l2_coeff = 5e-4
         self.grad_clip = 5.0
-        self.num_epochs = 40
+        self.num_epochs = 20
 
         # Learning rate. A value of 0 means that option is disabled.
         self.lr = 0.0
@@ -181,7 +191,7 @@ class Configs:
 
     @property
     def prediction_file(self):
-        return os.path.join(self.output_path, 'prediction_test.pkl')
+        return os.path.join(self.output_path, f'prediction_{self.eval_split}.pkl')
 
     @property
     def eval_res_file_format(self):
@@ -194,7 +204,7 @@ class Configs:
     @property
     def seen_classes_file(self):
         assert self.seenf >= 0
-        return os.path.join('zero-shot_inds', f'seen_inds_{self.seenf}.pkl.push')
+        return os.path.join('zero-shot_inds', f'{self.ds}_seen_inds_{self.seenf}.pkl.push')
 
     @property
     def tensorboard_dir(self):
@@ -206,7 +216,7 @@ class Configs:
 
     @property
     def eval_only(self):
-        return os.path.exists(self.best_model_file) and not self.resume
+        return self._eval_only
 
     def parse_args(self, fail_if_missing=True, reset=False):
         args = sys.argv
@@ -222,7 +232,7 @@ class Configs:
 
         args = namespace[1]
         if args[1:]:
-            # Invalid options: either unknown or ones initialised as None, which are Detectron's and should not be changed.
+            # Invalid options: either unknown or ones initialised as None, which should not be changed.
             raise ValueError('Invalid arguments: %s.' % ' '.join(args[1:]))
         sys.argv = sys.argv[:1]
 
@@ -260,6 +270,8 @@ class Configs:
         if self.lr == 0:
             self.lr = self._def_lr_sgd if self.sgd else self._def_lr_adam
 
+        self._eval_only = os.path.exists(self.best_model_file) and not self.resume
+
     def save(self, file_path=None):
         file_path = file_path or self.config_file
         with open(file_path, 'wb') as f:
@@ -276,11 +288,15 @@ class Configs:
             save_dir = self.save_dir
             resume = self.resume
             num_epochs = self.num_epochs
+            eval_on = self.eval_split
+            vceval = self.vceval
 
             # Load
             self.__dict__.update(d)
 
             # Restore
+            self.eval_split = eval_on
+            self.vceval = vceval
             self.save_dir = save_dir
             self.resume = resume
             assert self.output_path.rstrip('/') == output_path.rstrip('/'), (self.output_path, output_path)

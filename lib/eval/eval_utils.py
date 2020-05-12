@@ -3,6 +3,8 @@ from typing import List, Dict
 
 import numpy as np
 
+from lib.dataset.hoi_dataset import GTImgData
+
 
 class Evaluator:
     def evaluate_predictions(self, predictions: List[Dict], **kwargs):
@@ -10,6 +12,29 @@ class Evaluator:
 
     def output_metrics(self, to_keep=None, compute_pos=True, **kwargs) -> Dict[str, np.ndarray]:
         raise NotImplementedError
+
+    def _process_gt(self, gt_entry: GTImgData):
+        gt_boxes = gt_entry.boxes.astype(np.float, copy=False)
+        gt_ho_pairs = gt_entry.ho_pairs
+        gt_labels = gt_entry.labels
+
+        if gt_boxes is None:
+            gt_boxes = np.zeros((0, 4), dtype=np.float)
+
+        if gt_ho_pairs is None:
+            assert gt_labels is None
+            gt_ho_pairs = np.zeros((0, 2), dtype=np.int)
+            gt_labels = np.zeros(0, dtype=np.int)
+        else:
+            assert gt_labels is not None
+            valid_ho_pairs = ~np.any(np.isnan(gt_ho_pairs), axis=1)
+            gt_ho_pairs = gt_ho_pairs[valid_ho_pairs, :].astype(np.int)
+            gt_labels = gt_labels[valid_ho_pairs]
+
+        assert gt_labels.shape[0] == gt_ho_pairs.shape[0]
+        assert np.all(gt_labels >= 0)
+
+        return gt_boxes, gt_ho_pairs, gt_labels
 
 
 class MetricFormatter:

@@ -1,4 +1,5 @@
 from lib.dataset.vcoco import VCoco
+from lib.dataset.cocoa import Cocoa
 import os
 import argparse
 
@@ -7,15 +8,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('dst_folder', type=str)
     parser.add_argument('img_folder', type=str)
+    parser.add_argument('ds', choices=['vcoco', 'cocoa'])
     args = parser.parse_args()
     dst_folder = args.dst_folder
     img_folder = args.img_folder
 
     os.makedirs(dst_folder)
 
-    vcoco = VCoco()
+    ds = VCoco() if args.ds == 'vcoco' else Cocoa()
     for _split in ['train', 'test']:
-        fnames = [gtd.filename for gtd in vcoco.get_img_data(_split)]
+        fnames = [gtd.filename for gtd in ds.get_img_data(_split)]
         for i, fn in enumerate(fnames):
             if i % 100 == 0:
                 print(f'{i + 1}/{len(fnames)}.')

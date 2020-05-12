@@ -18,14 +18,16 @@
 
 import copy
 import json
+import os
 import pickle
+from typing import List, Dict
 
 import numpy as np
 from pycocotools.coco import COCO
 
-from typing import List, Dict
-from lib.models.abstract_model import Prediction
+from config import cfg
 from lib.dataset.vcoco import VCocoSplit
+from lib.models.abstract_model import Prediction
 
 
 class VCOCOeval(object):
@@ -183,13 +185,13 @@ class VCOCOeval(object):
                 roles = np.concatenate((roles, this_role), axis=0)
         return agents, roles
 
-    def _do_eval(self, detections_file, ovr_thresh=0.5):
+    def _do_eval(self, detections_file, ovr_thresh=0.5, seen_acts_str=None):
         vcocodb = self._get_vcocodb()
-        self._do_agent_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh)
-        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_1')
-        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_2')
+        # self._do_agent_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh)
+        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_1', seen_acts_str=seen_acts_str)
+        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_2', seen_acts_str=seen_acts_str)
 
-    def _do_role_eval(self, vcocodb, detections_file, ovr_thresh=0.5, eval_type='scenario_1'):
+    def _do_role_eval(self, vcocodb, detections_file, ovr_thresh=0.5, eval_type='scenario_1', seen_acts_str=None):
 
         with open(detections_file, 'rb') as f:
             dets = pickle.load(f)
@@ -312,14 +314,27 @@ class VCOCOeval(object):
                 prec = a_tp / np.maximum(a_tp + a_fp, np.finfo(np.float64).eps)
                 role_ap[aid, rid] = voc_ap(rec, prec)
 
-        print('---------Reporting Role AP (%)------------------')
+        role_ap_unseen = []
+        print_str = []
+        print_str.append('---------Reporting Role AP (%)------------------')
         for aid in range(self.num_actions):
-            if len(self.roles[aid]) < 2: continue
+            if len(self.roles[aid]) < 2:
+                continue
             for rid in range(len(self.roles[aid]) - 1):
-                print('{: >23}: AP = {:0.2f} (#pos = {:d})'.format(self.actions[aid] + '-' + self.roles[aid][rid + 1], role_ap[aid, rid] * 100.0,
-                                                                   int(npos[aid])))
-        print('Average Role [%s] AP = %.2f' % (eval_type, np.nanmean(role_ap) * 100.00))
-        print('---------------------------------------------')
+                a_str = f'{self.actions[aid]}_{self.roles[aid][rid + 1]}'
+                ap = role_ap[aid, rid]
+                if seen_acts_str is not None and a_str not in seen_acts_str:
+                    a_str = '*' + a_str
+                    role_ap_unseen.append(ap)
+                print_str.append(f'{a_str:>24s}: AP = {ap * 100.0:0.2f} (#pos = {int(npos[aid]):d})')
+        print_str.append('Average Role [%s] AP = %.2f' % (eval_type, np.nanmean(role_ap) * 100.00))
+        if role_ap_unseen:
+            print_str.append('Average Role [%s] AP unseen = %.2f' % (eval_type, np.nanmean(np.array(role_ap_unseen)) * 100.00))
+        print_str.append('---------------------------------------------')
+        print_str = '\n'.join(print_str)
+        print(print_str)
+        with open(os.path.join(cfg.output_path, 'vcoco_eval.txt'), 'a') as f:
+            f.write(print_str + '\n\n')
 
     def _do_agent_eval(self, vcocodb, detections_file, ovr_thresh=0.5):
 
@@ -477,7 +492,7 @@ def voc_ap(rec, prec):
     return ap
 
 
-def pkl_from_predictions(dict_predictions: List[Dict], dataset: VCocoSplit, filename: str, act_thr=0.05):
+def pkl_from_predictions(dict_predictions: List[Dict], dataset: VCocoSplit, filename: str):
     assert len(dict_predictions) == dataset.num_images
     actions = dataset.full_dataset.actions
 

@@ -150,8 +150,11 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
         cmap.set_under(np.array(neg_color))
         vrange = (0, vrange[1])
     if zero_color:
+        zero_value = 10 * (vrange[1] + 1)
         cmap.set_over(np.array(zero_color))
-        mat[mat == 0] = 10 * (vrange[1] + 1)
+        mat[mat == 0] = zero_value
+    else:
+        zero_value = None
 
     if log:
         vrange = (max(vrange[0], 1), vrange[1])
@@ -172,7 +175,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
                          pad=0.06,
                          )
 
-    y_tick_labels = [l.replace('_', ' ') for l in yticklabels]
+    y_tick_labels = [' '.join(l.replace('_', ' ').strip().split()) for l in yticklabels]
     y_ticks = np.arange(len(y_tick_labels))
     y_inds = y_inds if y_inds is not None else range(len(y_tick_labels))
 
@@ -191,7 +194,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     ax.set_yticklabels(min_tick_labels, minor=True)
     ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels, right=True, labelright=alternate_labels, labelsize=fsize)
 
-    x_tick_labels = [l.replace('_', ' ').strip() for l in xticklabels]
+    x_tick_labels = [' '.join(l.replace('_', ' ').strip().split()) for l in xticklabels]
     x_ticks = np.arange(len(x_tick_labels))
     x_inds = x_inds if x_inds is not None else range(len(x_tick_labels))
 
@@ -214,8 +217,10 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     if annotate:
         for i in range(mat.shape[0]):
             for j in range(mat.shape[1]):
-                text = ax.text(j, i, f'{mat[i, j]:.2f}', ha='center', va='center', color='k', fontsize=fsize)
-                # text.set_path_effects([path_effects.Stroke(linewidth=2, foreground='k'), path_effects.Normal()])
+                value = mat[i, j]
+                if value != zero_value and value >= 0:
+                    text = ax.text(j, i, f'{value:.2f}', ha='center', va='center', color='k', fontsize=fsize)
+                    # text.set_path_effects([path_effects.Stroke(linewidth=2, foreground='k'), path_effects.Normal()])
 
     if title is not None:
         ax.set_title(title)

@@ -25,19 +25,23 @@ COCO_CLASSES = [
 
 
 class Dims(NamedTuple):
-    N: Union[int, None]  # number of images in the batch (it is defined later)
-    P: Union[int, None]  # number of people
-    M: Union[int, None]  # number of objects
-    K: Union[int, None]  # number of keypoints returned by the keypoint detector
-    B: Union[int, None]  # number of body parts
-    S: Union[int, None]  # number of body part states
-    O: Union[int, None]  # number of object classes
-    A: Union[int, None]  # number of action classes
-    C: Union[int, None]  # number of interaction classes
-    F_img: Union[int, None]  # CNN feature vector dimensionality
-    F_kp: Union[int, None]  # keypoint feature vector dimensionality
-    F_obj: Union[int, None]  # object feature vector dimensionality
-    D: Union[int, None]  # dimensionality of interaction pattern
+    N: Union[int, None] = None  # number of images in the batch (it is defined later)
+    P: Union[int, None] = None  # number of people
+    M: Union[int, None] = None  # number of objects
+    K: Union[int, None] = None  # number of keypoints returned by the keypoint detector
+    B: Union[int, None] = None  # number of body parts
+    B_sym: Union[int, None] = None  # number of symmetric body parts (i.e., a single entry for e.g. 'foot' instead of two for left/right foot)
+    S: Union[int, None] = None  # number of body part states
+    S_sym: Union[int, None] = None  # number of symmetric body part states
+    O: Union[int, None] = None  # number of object classes
+    A: Union[int, None] = None  # number of action classes
+    C: Union[int, None] = None  # number of interaction classes
+    F_img: Union[int, None] = None  # CNN feature vector dimensionality
+    F_ex: Union[int, None] = None  # dimensionality of a single example. Typically: F_img (example is an image) or F_kp + F_obj (concatenation) or
+                            # F_obj (example is union region)
+    F_kp: Union[int, None] = None  # keypoint feature vector dimensionality
+    F_obj: Union[int, None] = None  # object feature vector dimensionality
+    D: Union[int, None] = None  # dimensionality of interaction pattern
 
 
 class PrecomputedFilesHandler:
@@ -66,13 +70,17 @@ class PrecomputedFilesHandler:
         return cls.files[file_name][key]
 
 
-def get_hico_to_coco_mapping(hico_objects, split_objects=None):
-    if split_objects is None:
-        split_objects = hico_objects
-    coco_obj_to_idx = {('hair dryer' if c == 'hair drier' else c).replace(' ', '_'): i for i, c in enumerate(COCO_CLASSES)}
-    assert set(coco_obj_to_idx.keys()) - {'__background__'} == set(hico_objects)
-    mapping = np.array([coco_obj_to_idx[obj] for obj in split_objects], dtype=np.int)
-    return mapping
+def get_obj_mapping(hico_objects, coco_to_hico=False):
+    if coco_to_hico:
+        hico_obj_to_idx = {c.replace('_', ' '): i for i, c in enumerate(hico_objects)}
+        assert set(hico_obj_to_idx.keys()) == set(COCO_CLASSES) - {'__background__'}
+        mapping = np.array([hico_obj_to_idx[obj] for obj in COCO_CLASSES[:-1]], dtype=np.int)
+        return mapping
+    else:
+        coco_obj_to_idx = {c.replace(' ', '_'): i for i, c in enumerate(COCO_CLASSES)}
+        assert set(coco_obj_to_idx.keys()) - {'__background__'} == set(hico_objects)
+        mapping = np.array([coco_obj_to_idx[obj] for obj in hico_objects], dtype=np.int)
+        return mapping
 
 
 def interactions_to_mat(hois, hico, np2np=False):
@@ -112,7 +120,7 @@ def get_hoi_adjacency_matrix(dataset, isolate_null=True):
 
 
 def get_noun_verb_adj_mat(dataset, isolate_null=True):
-    noun_verb_links = torch.from_numpy((dataset.full_dataset.oa_pair_to_interaction >= 0).astype(np.float32))
+    noun_verb_links = torch.from_numpy((dataset.full_dataset.oa_to_interaction >= 0).astype(np.float32))
     if isolate_null:
         noun_verb_links[:, 0] = 0
     return noun_verb_links

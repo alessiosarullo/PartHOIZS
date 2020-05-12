@@ -22,4 +22,4 @@ LOG="$EXP_DIR/log.txt"
 exec &> >(tee -a "$LOG")
 echo Logging ${EXP_DIR} to "$LOG"
 
-python -u scripts/run.py --model ${NET} --save_dir ${EXP_FULL_NAME} --resume "${@:4}"
+python -u scripts/launch.py --model ${NET} --save_dir ${EXP_FULL_NAME} --resume "${@:4}"

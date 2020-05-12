@@ -5,16 +5,22 @@ import numpy as np
 
 from config import cfg
 from lib.bbox_utils import compute_ious
+from lib.dataset.hicodet_hake import HoiDatasetSplit
 from lib.dataset.hoi_dataset import GTImgData
-from lib.dataset.vcoco import VCocoSplit
 from lib.eval.eval_utils import Evaluator, MetricFormatter, sort_and_filter
 from lib.models.abstract_model import Prediction
 from lib.timer import Timer
 
 
-class EvaluatorVCocoROI(Evaluator):
-    def __init__(self, dataset_split: VCocoSplit, iou_thresh=0.5, hoi_score_thr=None, num_hoi_thr=None):
-        self.dataset_split = dataset_split  # type: VCocoSplit
+class EvaluatorHoiRoi(Evaluator):
+    """
+    Efficient porting of the evaluation code for HICO-DET.
+    """
+
+    def __init__(self, dataset_split: HoiDatasetSplit, iou_thresh=0.5, hoi_score_thr=None, num_hoi_thr=None):
+        super().__init__()
+
+        self.dataset_split = dataset_split  # type: HoiDatasetSplit
         self.full_dataset = self.dataset_split.full_dataset
         self.gt_data = self.dataset_split.all_gt_img_data
         self.iou_thresh = iou_thresh
@@ -34,28 +40,31 @@ class EvaluatorVCocoROI(Evaluator):
     def output_metrics(self, to_keep=None, compute_pos=True, sort=False, **kwargs):
         mf = MetricFormatter()
 
-        metrics = self._output_metrics(mf, sort=sort, actions_to_keep=to_keep)
+        metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=to_keep)
 
         if compute_pos:
             # Same, but with null interaction filtered
+            no_null_interaction_mask = (self.full_dataset.interactions[:, 0] > 0)
             if to_keep is None:
-                to_keep = list(range(1, self.full_dataset.num_actions))
+                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask).tolist())
             else:
-                assert isinstance(to_keep, list)
-                to_keep = sorted(set(to_keep) - {0})
-            pos_metrics = self._output_metrics(mf, sort=sort, actions_to_keep=to_keep, prefix='p')
+                interaction_mask = np.zeros(self.full_dataset.num_interactions, dtype=bool)
+                interaction_mask[np.array(to_keep).astype(np.int)] = True
+                interactions_to_keep = sorted(np.flatnonzero(no_null_interaction_mask & interaction_mask).tolist())
+            pos_metrics = self._output_metrics(mf, sort=sort, interactions_to_keep=interactions_to_keep, prefix='p')
 
             for k, v in pos_metrics.items():
                 assert k not in metrics.keys()
                 metrics[k] = v
         return metrics
 
-    def _output_metrics(self, mformatter, sort, actions_to_keep, prefix=''):
+    def _output_metrics(self, mformatter, sort, interactions_to_keep, prefix=''):
+        gt_labels = np.concatenate(self.gt_labels, axis=0)
         gt_hoi_class_hist, hoi_metrics, hoi_class_inds = sort_and_filter(metrics=self.metrics,
-                                                                         gt_labels=np.concatenate(self.gt_labels),
-                                                                         all_classes=list(range(self.full_dataset.num_actions)),
+                                                                         gt_labels=gt_labels,
+                                                                         all_classes=list(range(self.full_dataset.num_interactions)),
                                                                          sort=sort,
-                                                                         keep_inds=actions_to_keep,
+                                                                         keep_inds=interactions_to_keep,
                                                                          metric_prefix=prefix)
         mformatter.format_metric_and_gt_lines(gt_hoi_class_hist, hoi_metrics, hoi_class_inds, gt_str='GT HOIs', verbose=cfg.verbose)
         return hoi_metrics
@@ -78,13 +87,16 @@ class EvaluatorVCocoROI(Evaluator):
         Timer.get('Eval epoch').toc()
 
     def compute_metrics(self):
+        gt_hoi_labels = np.concatenate(self.gt_labels, axis=0)
+        assert self.gt_count == gt_hoi_labels.shape[0]
         predict_hoi_scores = np.concatenate(self.predict_scores, axis=0)
         pred_gt_ho_assignment = np.concatenate(self.pred_gt_assignment_per_hoi, axis=0)
-        gt_hoi_classes_count = Counter(np.concatenate(self.gt_labels).tolist())
 
-        ap = np.zeros(self.full_dataset.num_actions)
-        recall = np.zeros(self.full_dataset.num_actions)
-        for j in range(self.full_dataset.num_actions):
+        gt_hoi_classes_count = Counter(gt_hoi_labels.tolist())
+
+        ap = np.zeros(self.full_dataset.num_interactions)
+        recall = np.zeros(self.full_dataset.num_interactions)
+        for j in range(self.full_dataset.num_interactions):
             num_gt_hois = gt_hoi_classes_count[j]
             if num_gt_hois == 0:
                 continue
@@ -102,31 +114,41 @@ class EvaluatorVCocoROI(Evaluator):
             ap[j] = ap_j
             if rec_j.size > 0:
                 recall[j] = rec_j[-1]
-
         self.metrics['M-mAP'] = ap
-        # self.metrics['M-rec'] = recall
 
     def match_prediction_to_gt(self, gt_entry: GTImgData, prediction: Prediction):
         gt_boxes, gt_ho_pairs, gt_labels = self._process_gt(gt_entry=gt_entry)
+        if self.full_dataset.labels_are_actions:
+            gt_action_labels = gt_labels
+            gt_labels = self.full_dataset.oa_to_interaction[gt_entry.box_classes[gt_ho_pairs[:, 1]], gt_action_labels]
+            assert np.all(gt_labels >= 0)
         num_gt_hois = gt_ho_pairs.shape[0]
 
         gt_ho_ids = self.gt_count + np.arange(num_gt_hois)
         self.gt_count += num_gt_hois
 
-        predict_act_scores = np.zeros([0, self.full_dataset.num_actions])
-        predict_ho_pairs = np.zeros((0, 2), dtype=np.int)
         predict_boxes = np.zeros((0, 4))
+        predict_ho_pairs = np.zeros((0, 2), dtype=np.int)
+        predict_hoi_scores = np.zeros([0, self.full_dataset.num_interactions])
         if prediction.obj_boxes is not None:
             predict_boxes = prediction.obj_boxes
-
             if prediction.ho_pairs is not None:
                 predict_ho_pairs = prediction.ho_pairs
-                predict_act_scores = prediction.output_scores
+
+                if self.full_dataset.labels_are_actions:
+                    predict_action_scores = prediction.output_scores
+                    predict_hoi_obj_scores = prediction.hoi_obj_scores
+
+                    predict_hoi_scores = np.empty([predict_ho_pairs.shape[0], self.full_dataset.num_interactions])
+                    for iid, (pid, oid) in enumerate(self.full_dataset.interactions):
+                        predict_hoi_scores[:, iid] = predict_hoi_obj_scores[:, oid] * predict_action_scores[:, pid]
+                else:
+                    predict_hoi_scores = prediction.output_scores
         else:
             assert prediction.ho_pairs is None
 
         pred_gt_ious = compute_ious(predict_boxes, gt_boxes)
-        pred_gt_assignment_per_hoi = np.full((predict_act_scores.shape[0], self.full_dataset.num_actions), fill_value=-1, dtype=np.int)
+        pred_gt_assignment_per_hoi = np.full((predict_hoi_scores.shape[0], self.full_dataset.num_interactions), fill_value=-1, dtype=np.int)
         for predict_idx, (ph, po) in enumerate(predict_ho_pairs):
             gt_pair_ious = np.zeros(num_gt_hois)
             for gtidx, (gh, go) in enumerate(gt_ho_pairs):
@@ -134,7 +156,7 @@ class EvaluatorVCocoROI(Evaluator):
                 iou_o = pred_gt_ious[po, go]
                 gt_pair_ious[gtidx] = min(iou_h, iou_o)
             if np.any(gt_pair_ious >= self.iou_thresh):
-                gt_pair_ious_per_hoi = np.zeros((num_gt_hois, self.full_dataset.num_actions))
+                gt_pair_ious_per_hoi = np.zeros((num_gt_hois, self.full_dataset.num_interactions))
                 gt_pair_ious_per_hoi[np.arange(num_gt_hois), gt_labels] = gt_pair_ious
                 gt_assignments = gt_pair_ious_per_hoi.argmax(axis=0)[np.any(gt_pair_ious_per_hoi >= self.iou_thresh, axis=0)]
                 gt_hoi_assignments = gt_labels[gt_assignments]
@@ -143,7 +165,7 @@ class EvaluatorVCocoROI(Evaluator):
                 pred_gt_assignment_per_hoi[predict_idx, gt_hoi_assignments] = gt_ho_ids[gt_assignments]
 
         self.gt_labels.append(gt_labels)
-        self.predict_scores.append(predict_act_scores)
+        self.predict_scores.append(predict_hoi_scores)
         self.pred_gt_assignment_per_hoi.append(pred_gt_assignment_per_hoi)
 
     @staticmethod

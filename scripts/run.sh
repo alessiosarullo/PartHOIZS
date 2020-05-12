@@ -36,9 +36,9 @@ do
   echo Logging "${EXP_DIR}" to "$LOG"
 
   if [ "${NUM_RUNS}" -gt 1 ]; then
-    python -u scripts/run.py --model "${NET}" --save_dir "${RUN_NAME}"  --randomize "${@:6}"
+    python -u scripts/launch.py --model "${NET}" --save_dir "${RUN_NAME}"  --randomize "${@:6}"
   else
-    python -u scripts/run.py --model "${NET}" --save_dir "${RUN_NAME}" "${@:6}"
+    python -u scripts/launch.py --model "${NET}" --save_dir "${RUN_NAME}" "${@:6}"
   fi
 done
 

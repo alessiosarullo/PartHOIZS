@@ -3,8 +3,8 @@ from typing import List, Dict, Union, NamedTuple
 
 import numpy as np
 import torch
-from PIL import Image
 import torch.utils.data
+from PIL import Image
 
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset, GTImgData
@@ -21,12 +21,14 @@ class Labels(NamedTuple):
 
 
 class Minibatch(NamedTuple):
+    # TODO Lists -> NamedTuples
     ex_data: List
     im_data: List
     person_data: List
     obj_data: List
     labels: Labels = Labels()
-    other: List = []
+    epoch: Union[None, int] = None
+    iter: Union[None, int] = None
 
 
 class AbstractHoiDatasetSplit:
@@ -67,7 +69,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         self.actions = [full_dataset.actions[i] for i in action_inds]
         self.seen_actions = np.array(action_inds, dtype=np.int)
 
-        seen_op_mat = self.full_dataset.oa_pair_to_interaction[self.seen_objects, :][:, self.seen_actions]
+        seen_op_mat = self.full_dataset.oa_to_interaction[self.seen_objects, :][:, self.seen_actions]
         seen_interactions = set(np.unique(seen_op_mat).tolist()) - {-1}
         self.seen_interactions = np.array(sorted(seen_interactions), dtype=np.int)
         self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
@@ -112,14 +114,12 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
     def dims(self) -> Dims:
         P, M = cfg.max_ppl, cfg.max_obj
         K = 17  # FIXME magic constant
-        B, S = None, None
         O, A, C = self.full_dataset.num_objects, self.full_dataset.num_actions, self.full_dataset.num_interactions
-        F_img, F_kp, F_obj = None, None, None
         if cfg.tin:
             D = cfg.ipsize
         else:
             D = None
-        return Dims(N=None, P=P, M=M, K=K, B=B, S=S, O=O, A=A, C=C, F_img=F_img, F_kp=F_kp, F_obj=F_obj, D=D)
+        return Dims(N=None, P=P, M=M, K=K, O=O, A=A, C=C, D=D)
 
     def get_loader(self, *args, **kwargs):
         return self._feat_provider.get_loader(*args, **kwargs)
@@ -147,7 +147,6 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 
 class FeatProvider(torch.utils.data.Dataset):
     def __init__(self, ds: HoiDatasetSplit, ds_name,
-                 labels_are_actions=False,
                  obj_mapping=None, filter_objs=True,
                  max_ppl=None, max_obj=None):
         super().__init__()
@@ -161,7 +160,6 @@ class FeatProvider(torch.utils.data.Dataset):
         #############################################################################################################################
         no_feats = False  # FIXME
 
-        # TODO remove
         #####################################################
         # Image
         #####################################################
@@ -210,20 +208,29 @@ class FeatProvider(torch.utils.data.Dataset):
         assert np.all(np.max(self.coco_kps[:, :, :2], axis=1) <= self.person_boxes[:, 2:4])
         assert self.person_boxes.dtype == self.coco_kps.dtype == self.person_scores.dtype == self.hake_kp_boxes.dtype == np.float32
 
+        #####################################################
+        # Whole examples
+        #####################################################
+        self.ex_feat_dim = self.kp_net_dim + self.obj_feats_dim
+
         #############################################################################################################################
         # Cache variables to speed up loading
         #############################################################################################################################
         self.img_data_cache = self._compute_img_data(filter_objs, max_ppl=max_ppl, max_obj=max_obj)  # type: List[Dict]
+        self.obj_scores_per_img = np.stack([np.max(self.obj_scores[imd['obj_inds'], :], axis=0)
+                                            if 'obj_inds' in imd else np.zeros(self.full_dataset.num_objects)
+                                            for imd in self.img_data_cache],
+                                           axis=0)
         assert len(self.img_data_cache) == self.wrapped_ds.num_images
+        assert self.obj_scores_per_img.shape == (self.wrapped_ds.num_images, self.full_dataset.num_objects)
 
         #############################################################################################################################
         # Labels
         #############################################################################################################################
-        self.labels_are_actions = labels_are_actions
         self.labels = self.non_empty_inds = None  # these will be initialised later
 
     def _filter_zs_labels(self, labels):
-        if self.labels_are_actions:
+        if self.full_dataset.labels_are_actions:
             seen, num_all = self.wrapped_ds.seen_actions, self.full_dataset.num_actions
         else:  # labels are interactions
             seen, num_all = self.wrapped_ds.seen_interactions, self.full_dataset.num_interactions
@@ -291,7 +298,7 @@ class FeatProvider(torch.utils.data.Dataset):
         return all_img_data
 
     def hold_out(self, ratio):
-        if cfg.no_filter_bg_only:
+        if cfg.include_bg_only:
             num_examples = len(self)
             ex_inds = np.arange(num_examples)
         else:
@@ -302,9 +309,14 @@ class FeatProvider(torch.utils.data.Dataset):
         self.keep_inds = keep_inds
         self.holdout_inds = np.setdiff1d(ex_inds, keep_inds)
 
-    def get_loader(self, batch_size, shuffle=None, drop_last=None, holdout_set=False, **kwargs):
-        if self.split == 'test':
-            data_loader = self._get_test_loader(batch_size=batch_size,
+    def get_loader(self, batch_size, evaluation=None, shuffle=None, drop_last=None, holdout_set=False, **kwargs):
+        if evaluation is None:
+            evaluation = (self.split == 'test')
+
+        if evaluation:
+            assert not holdout_set
+            data_loader = self._get_eval_loader(ds=self,
+                                                batch_size=batch_size,
                                                 shuffle=False,
                                                 drop_last=False,
                                                 **kwargs)
@@ -313,21 +325,23 @@ class FeatProvider(torch.utils.data.Dataset):
                 shuffle = not holdout_set
             if drop_last is None:
                 drop_last = True
-            data_loader = self._get_train_loader(batch_size=batch_size,
+
+            if self.keep_inds is None:
+                assert self.holdout_inds is None and holdout_set is False
+                split_inds = None
+            else:
+                split_inds = self.holdout_inds if holdout_set else self.keep_inds
+
+            data_loader = self._get_train_loader(split_inds=split_inds,
+                                                 batch_size=batch_size,
                                                  shuffle=shuffle,
                                                  drop_last=drop_last,
-                                                 holdout_set=holdout_set,
                                                  **kwargs)
         return data_loader
 
-    def _get_train_loader(self, batch_size, shuffle, drop_last, holdout_set, **kwargs):
-        if self.keep_inds is None:
-            assert self.holdout_inds is None and holdout_set is False
-            ds = self
-        else:
-            ds = torch.utils.data.Subset(self, self.holdout_inds if holdout_set else self.keep_inds)
+    def _get_train_loader(self, split_inds, batch_size, shuffle, drop_last, **kwargs):
         data_loader = torch.utils.data.DataLoader(
-            dataset=ds,
+            dataset=self if split_inds is None else torch.utils.data.Subset(self, split_inds),
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
@@ -336,7 +350,7 @@ class FeatProvider(torch.utils.data.Dataset):
         )
         return data_loader
 
-    def _get_test_loader(self, batch_size, **kwargs):
+    def _get_eval_loader(self, ds, batch_size, **kwargs):
         raise NotImplementedError
 
     def __getitem__(self, idx):
@@ -359,7 +373,7 @@ class FeatProvider(torch.utils.data.Dataset):
 class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, ds_name, *args, **kwargs):
         super().__init__(ds_name=ds_name, max_ppl=0, max_obj=0, *args, **kwargs)
-        self.hoi_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}__hoi_assignment_file_{self.split}.h5')
+        self.hoi_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}__hoi_pairs_{self.split}.h5')
         ho_infos = PrecomputedFilesHandler.get(self.hoi_fn, 'ho_infos', load_in_memory=True)
 
         fname_ids_to_img_idx = {imdata['fname_id']: im_idx for im_idx, imdata in enumerate(self.img_data_cache)}
@@ -399,7 +413,8 @@ class HoiInstancesFeatProvider(FeatProvider):
         if self.split != 'test':
             _labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
             assert self.ho_infos.shape[0] == _labels.shape[0]
-            if self.labels_are_actions:
+            if self.full_dataset.labels_are_actions:
+                self.hoi_obj_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
                 negatives = (_labels[:, 0] > 0)
                 positives = np.any(_labels[:, 1:] > 0, axis=1)
             else:
@@ -422,12 +437,7 @@ class HoiInstancesFeatProvider(FeatProvider):
     def __len__(self):
         return self.ho_infos.shape[0]
 
-    def _get_train_loader(self, batch_size, shuffle, drop_last, holdout_set, **kwargs):
-        if self.keep_inds is None:
-            assert self.holdout_inds is None and holdout_set is False
-            split_inds = None
-        else:
-            split_inds = self.holdout_inds if holdout_set else self.keep_inds
+    def _get_train_loader(self, split_inds, batch_size, shuffle, drop_last, **kwargs):
         data_loader = torch.utils.data.DataLoader(
             dataset=self,
             batch_sampler=BalancedTripletSampler(self,
@@ -440,7 +450,7 @@ class HoiInstancesFeatProvider(FeatProvider):
         )
         return data_loader
 
-    def _get_test_loader(self, batch_size, **kwargs):
+    def _get_eval_loader(self, ds, batch_size, **kwargs):
         num_imgs = self.wrapped_ds.num_images
         hoi_idxs_per_img_idx = {}
         for hoi_idx, im_idx in enumerate(self.ho_infos[:, 0]):
@@ -455,10 +465,14 @@ class HoiInstancesFeatProvider(FeatProvider):
             def __iter__(self):
                 return iter(hoi_idxs_per_img_idx)
 
+        def _collate(x):
+            x = [y.tolist() if isinstance(y, np.ndarray) else y for y in x]
+            return None if not x[0] else self.collate(x[0])
+
         data_loader = torch.utils.data.DataLoader(
-            dataset=self,
-            sampler=ImgSampler(self),
-            collate_fn=lambda x: None if not x[0] else self.collate(x[0]),
+            dataset=ds,
+            sampler=ImgSampler(ds),
+            collate_fn=_collate,
             **kwargs,
         )
         return data_loader
@@ -467,19 +481,16 @@ class HoiInstancesFeatProvider(FeatProvider):
         idxs = np.array(idx_list)
         im_idxs = self.ho_infos[idxs, 0]
 
-        # Example data
-        ex_ids = [f'ex{idx}' for idx in idxs]
-        feats = torch.tensor(self.pc_img_feats[im_idxs, :], dtype=torch.float32, device=device)  # FIXME
-
         # Image data
         im_ids = [self.wrapped_ds.all_gt_img_data[idx].filename for idx in im_idxs]
-        im_feats = feats
+        im_feats = torch.tensor(self.pc_img_feats[im_idxs, :], dtype=torch.float32, device=device)
         orig_img_wh = torch.tensor(np.stack([self.wrapped_ds.all_gt_img_data[idx].img_size for idx in im_idxs], axis=0),
                                    dtype=torch.float32, device=device)
+        im_obj_scores = torch.tensor(self.obj_scores_per_img[im_idxs, :], dtype=torch.float32, device=device)
 
         dims = self.wrapped_ds.dims
         assert dims.F_kp == dims.F_obj
-        P, M, B, D = dims.P, dims.M, dims.B, dims.D
+        P, M, B, D, O = dims.P, dims.M, dims.B, dims.D, dims.O
         assert P == M == 1
         N = idxs.size
 
@@ -487,25 +498,40 @@ class HoiInstancesFeatProvider(FeatProvider):
         obj_inds = self.ho_infos[idxs, 3].astype(np.int, copy=False)
         is_obj_human = self.ho_infos[idxs, 4].astype(bool, copy=False)
 
+        # Masks instead of inds in case H5 file are not loaded in memory.
+        person_mask = np.zeros(self.person_boxes.shape[0], dtype=bool)
+        person_mask[person_inds] = True
+        _, p_inv_index = np.unique(person_inds, return_inverse=True)
+
+        hum_obj_inds = obj_inds[is_obj_human]
+        hum_object_mask = np.zeros(self.person_boxes.shape[0], dtype=bool)
+        hum_object_mask[hum_obj_inds] = True
+        _, hobj_inv_index = np.unique(hum_obj_inds, return_inverse=True)
+
+        obj_obj_inds = obj_inds[~is_obj_human]
+        obj_object_mask = np.zeros(self.obj_boxes.shape[0], dtype=bool)
+        obj_object_mask[obj_obj_inds] = True
+        _, oobj_inv_index = np.unique(obj_obj_inds, return_inverse=True)
+
         ppl_boxes = self.person_boxes[person_inds]
-        ppl_feats = self.person_feats[person_inds]
+        ppl_feats = self.person_feats[person_mask, ...][p_inv_index, ...]
         coco_kps = self.coco_kps[person_inds]
         kp_boxes = self.hake_kp_boxes[person_inds]
-        kp_feats = self.hake_kp_feats[person_inds]
+        kp_feats = self.hake_kp_feats[person_mask, ...][p_inv_index, ...]
 
         obj_boxes = np.full((obj_inds.shape[0], self.obj_boxes.shape[1]), fill_value=np.nan)
         obj_scores = np.full((obj_inds.shape[0], self.obj_scores.shape[1]), fill_value=np.nan)
         obj_feats = np.full((obj_inds.shape[0], self.obj_feats.shape[1]), fill_value=np.nan)
         # Object is human
-        obj_boxes[is_obj_human] = self.person_boxes[obj_inds[is_obj_human]]
-        _hum_obj_scores = self.person_scores[obj_inds[is_obj_human]]
-        obj_scores[is_obj_human, :] = (1 - _hum_obj_scores[:, None]) / (obj_scores.shape[1] - 1)  # equally distributed among all the other classes
+        obj_boxes[is_obj_human] = self.person_boxes[hum_obj_inds]
+        _hum_obj_scores = self.person_scores[hum_obj_inds]
+        obj_scores[is_obj_human, :] = (1 - _hum_obj_scores[:, None]) / (O - 1)  # equally distributed among all the other classes
         obj_scores[is_obj_human, self.wrapped_ds.full_dataset.human_class] = _hum_obj_scores
-        obj_feats[is_obj_human] = self.person_feats[obj_inds[is_obj_human]]
+        obj_feats[is_obj_human] = self.person_feats[hum_object_mask, ...][hobj_inv_index, ...]
         # Object is not human
-        obj_boxes[~is_obj_human] = self.obj_boxes[obj_inds[~is_obj_human]]
-        obj_scores[~is_obj_human] = self.obj_scores[obj_inds[~is_obj_human]]
-        obj_feats[~is_obj_human] = self.obj_feats[obj_inds[~is_obj_human]]
+        obj_boxes[~is_obj_human] = self.obj_boxes[obj_obj_inds]
+        obj_scores[~is_obj_human] = self.obj_scores[obj_obj_inds]
+        obj_feats[~is_obj_human] = self.obj_feats[obj_object_mask, ...][oobj_inv_index, ...]
         assert not np.any(np.isnan(obj_boxes))
         assert not np.any(np.isnan(obj_scores))
         assert not np.any(np.isnan(obj_feats))
@@ -521,22 +547,39 @@ class HoiInstancesFeatProvider(FeatProvider):
 
         all_box_inds, u_idx = np.unique(np.concatenate([person_inds, obj_inds]), return_index=True)
         all_boxes = np.concatenate([ppl_boxes, obj_boxes], axis=0)[u_idx, :]
+        ppl_scores = np.full((ppl_boxes.shape[0], O), fill_value=1 / (O - 1))
+        ppl_scores[:, self.full_dataset.human_class] = self.person_scores[person_inds]
+        all_box_scores = np.concatenate([ppl_scores, obj_scores], axis=0)[u_idx, :]  # TODO check
         box_ind_mapping = {idx: i for i, idx in enumerate(all_box_inds)}
         local_ho_pairs = np.stack([np.array([box_ind_mapping[idx] for idx in person_inds]),
                                    np.array([box_ind_mapping[idx] for idx in obj_inds]),
                                    ], axis=1)
 
-        act_labels = pstate_labels = None
+        # Example data
+        ex_ids = [f'{self.split}_ex{idx}' for idx in idxs]
+        ex_feats = torch.cat([t_ppl_feats.squeeze(dim=1), t_obj_feats.squeeze(dim=1)], dim=1)
+
+        labels = obj_labels_onehot = pstate_labels = None
         if self.split != 'test':
-            act_labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
+            labels = torch.tensor(self.labels[idxs, :], dtype=torch.float32, device=device)
+            if self.full_dataset.labels_are_actions:
+                obj_labels = self.hoi_obj_labels[idxs]
+                assert np.all(obj_labels >= 0)
+                obj_labels_onehot = np.zeros((N, self.full_dataset.num_objects))
+                obj_labels_onehot[np.arange(N), obj_labels.astype(np.int)] = 1
+                obj_labels_onehot = torch.tensor(obj_labels_onehot, dtype=torch.float32, device=device)
             if self.pstate_labels is not None:
                 pstate_labels = torch.tensor(self.pstate_labels[idxs, :], dtype=torch.float32, device=device)
+        if self.full_dataset.labels_are_actions:
+            all_labels = Labels(obj=obj_labels_onehot, act=labels, pstate=pstate_labels)
+        else:
+            all_labels = Labels(hoi=labels, pstate=pstate_labels)
 
-        mb = Minibatch(ex_data=[ex_ids, feats, all_boxes, local_ho_pairs],
-                       im_data=[im_ids, im_feats, orig_img_wh],
+        mb = Minibatch(ex_data=[ex_ids, ex_feats, local_ho_pairs, all_boxes, all_box_scores],
+                       im_data=[im_ids, im_feats, orig_img_wh, im_obj_scores],
                        person_data=[t_ppl_boxes, t_ppl_feats, t_coco_kps, t_kp_boxes, t_kp_feats],
                        obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
-                       labels=Labels(act=act_labels, pstate=pstate_labels))
+                       labels=all_labels)
         if cfg.tin:
             interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + B), dtype=np.float32)
             for i in range(N):
@@ -558,8 +601,6 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
         super().__init__(dataset)
         if not drop_last:
             raise NotImplementedError()
-        if not dataset.labels_are_actions:
-            raise NotImplementedError
         assert dataset.split == 'train'
 
         self.batch_size = batch_size
@@ -567,15 +608,19 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.dataset = dataset
 
-        act_labels = dataset.labels
-
         # Note: negatives = background, as opposed to not being labelled at all
-        pos_hois_mask = np.any(act_labels[:, 1:], axis=1)
-        neg_hois_mask = (act_labels[:, 0] > 0)
+        labels = dataset.labels
+        if dataset.full_dataset.labels_are_actions:
+            pos_hois_mask = np.any(labels[:, 1:], axis=1)
+            neg_hois_mask = (labels[:, 0] > 0)
+        else:
+            null_interactions = (dataset.full_dataset.interactions[:, 0] == 0)
+            pos_hois_mask = np.any(labels[:, ~null_interactions] > 0, axis=1)
+            neg_hois_mask = np.any(labels[:, null_interactions] > 0, axis=1)
 
         # Sanity check: either positive, negative or unlabelled
-        assert np.all((pos_hois_mask ^ neg_hois_mask) | (~act_labels.any(axis=1)))
-        if not cfg.no_filter_bg_only:
+        assert np.all((pos_hois_mask ^ neg_hois_mask) | (~labels.any(axis=1)))
+        if not cfg.include_bg_only:
             assert np.all((pos_hois_mask ^ neg_hois_mask)[dataset.non_empty_inds])
 
         split_inds = split_inds if split_inds is not None else np.arange(pos_hois_mask.size)

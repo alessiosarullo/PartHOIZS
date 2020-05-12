@@ -9,7 +9,7 @@ from scipy.io import loadmat
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset, GTImgData
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, HoiInstancesFeatProvider
-from lib.dataset.utils import Dims, get_hico_to_coco_mapping
+from lib.dataset.utils import Dims, get_obj_mapping
 
 
 class HicoDetHakeSplit(HoiDatasetSplit):
@@ -22,17 +22,20 @@ class HicoDetHakeSplit(HoiDatasetSplit):
         return HicoDetHake()
 
     def _init_feat_provider(self, **kwargs):
-        return HoiInstancesFeatProvider(ds=self, ds_name='hico', obj_mapping=get_hico_to_coco_mapping(self.full_dataset.objects), **kwargs)
+        return HoiInstancesFeatProvider(ds=self, ds_name='hico', obj_mapping=get_obj_mapping(self.full_dataset.objects), **kwargs)
 
     @property
     def dims(self) -> Dims:
         dims = super().dims
-        dims = dims._replace(B=self.full_dataset.num_parts, S=self.full_dataset.num_states)
+        dims = dims._replace(P=1, M=1)  # each example is an interaction, so 1 person and 1 object
+        dims = dims._replace(B=self.full_dataset.num_parts, B_sym=self.full_dataset.num_symparts,
+                             S=self.full_dataset.num_states, S_sym=self.full_dataset.num_symstates)
         if self._feat_provider is not None:
             F_img = self._feat_provider.pc_img_feats.shape[1]
             F_kp = self._feat_provider.kp_net_dim
             F_obj = self._feat_provider.obj_feats_dim
-            dims = dims._replace(F_img=F_img, F_kp=F_kp, F_obj=F_obj)
+            F_ex = self._feat_provider.ex_feat_dim
+            dims = dims._replace(F_img=F_img, F_ex=F_ex, F_kp=F_kp, F_obj=F_obj)
         return dims
 
 
@@ -45,6 +48,12 @@ class HicoDetHake(HoiDataset):
             - states: List[str]. All body part states. Note that states are duplicated for right/left body parts:
                             both "right_hand hold" and "left_hand hold" are included.
             - states_per_part: List[np.array]. Associates an array of indices in `states` to each part (same order as `parts`).
+
+            - symparts: List[str]. Name of "symmetric" body parts (e.g., 'foot' instead of 'left foot' and 'right foot').
+            - symparts_inds: List[np.array]. Indices of `parts` corresponding to a sympart (e.g., foot -> indices of left/right foot).
+            - states_per_sympart: List[np.array]. Associates an array of indices in `states` to each sympart (same order as `symparts_inds`).
+            - symstates: List[str]. All sympart states. This is essentially the content of file `Part_State_76.txt`.
+            - symstates_inds: List[np.array]. Indices of `states` corresponding to a symstate (e.g., foot: walk -> indices of left/right foot: walk).
         """
         driver = HicoDetDriver()  # type: HicoDetDriver
 
@@ -55,84 +64,119 @@ class HicoDetHake(HoiDataset):
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action,
                          interactions_classes=interactions_classes)
+        self.driver=driver
 
         with open(os.path.join(cfg.data_root, 'HICO-DET', 'HAKE', 'joints.txt'), 'r') as f:
             self.parts = [l.strip().lower() for l in f.readlines()]  # type: List[str]
 
         with open(os.path.join(cfg.data_root, 'HICO-DET', 'HAKE', 'Part_State_76.txt'), 'r') as f:
             part_state_dict_str = {}
-            part_state_pairs = []
+            symstates = []
             for i, l in enumerate(f.readlines()):
-                if not l.strip():
+                l = l.strip()
+                if not l:
                     break
-                part_state_pairs = [x.strip().lower() for x in l.strip().split(':')]
-                body_part, part_state = part_state_pairs
+                body_part, part_state = [x.strip().lower() for x in l.split(':')]
                 if part_state == 'no_interaction':
                     part_state = self.null_action
                 part_state = part_state.replace(' ', '_')
                 part_state_dict_str.setdefault(body_part, []).append(part_state)
-                part_state_pairs.append([body_part, part_state])
-        self._part_state_pairs = part_state_pairs  # type: List[List[str]]  # This is essentially the content of file `Part_State_76.txt`.
+                symstates.append(f'{body_part}: {part_state}')  # different from `l` because spaces in the state have been substituted by underscores
         self.states = []  # type: List[str]
         self.states_per_part = []  # type: List[np.array]
         for p in self.parts:
             part_states = part_state_dict_str[p.split("_")[-1]]
             self.states_per_part.append(len(self.states) + np.arange(len(part_states)))
             for s in part_states:
-                self.states.append(f'{p} {s}')
+                self.states.append(f'{p}: {s}')
         assert np.all(np.concatenate(self.states_per_part) == np.arange(self.num_states))
 
-        img_data_per_split = {s: self.compute_img_data(split=s, driver=driver) for s in ['train', 'test']}  # type: Dict[str, List[GTImgData]]
-        hake_img_data = {s: self.compute_hake_img_data(split=s) for s in ['train']}  # type: Dict[str, List[GTImgData]]
+        self.symparts = list(part_state_dict_str.keys())
+        self.symparts_inds = [np.array([i for i, p in enumerate(self.parts) if sp in p]) for sp in self.symparts]
+        self.states_per_sympart = [np.concatenate([self.states_per_part[i] for i in inds]) for inds in self.symparts_inds]
+        self.symstates = symstates
+        self.symstates_inds = [np.array([i for i, s in enumerate(self.states) if s.endswith(ss)]) for ss in self.symstates]
+        self.symstates_per_sympart = [np.array([i for i, s in enumerate(symstates) if s.split(':')[0] == sp]) for sp in self.symparts]
+        assert sorted(j for js in self.symparts_inds for j in js) == list(range(self.num_parts))
+        assert sorted(j for js in self.symstates_inds for j in js) == list(range(self.num_states))
+        assert np.all(np.array([s for ss in self.symstates_per_sympart for s in ss]) == np.arange(self.num_symstates))
 
-        # Sanity check + add pstate info to HICO-DET annotations (which are more exhaustive than HICO-DET_HAKE's ones)
+        # # For debug
+        # for i, js in enumerate(self.symparts_inds):
+        #     print(f'{self.symparts[i]:10s} ->', ' | '.join([f'{self.parts[j]:10s}' for j in js]))
+        # for i, js in enumerate(self.symstates_inds):
+        #     print(f'{self.symstates[i]:30s} ->', ' | '.join([f'{self.states[j]:30s}' for j in js]))
+        # for i, s in enumerate(self.symstates_per_sympart):
+        #     print(f'{self.symparts[i]:10s} ->', ', '.join([f'{self.symstates[j]}' for j in s]))
+
         self._split_img_dir = driver.split_img_dir
-        new_img_data_per_split = {'test': img_data_per_split['test']}  # type: Dict[str, List[GTImgData]]
-        for split in ['train']:
-            new_img_data_per_split[split] = []
-            for data, hdata in zip(img_data_per_split[split], hake_img_data[split]):
-                new_data = data
 
-                assert data.filename == hdata.filename
-                if hdata.img_size is None:  # image should be empty
-                    assert all([d is None for d in data[2:]])
-                    assert all([d is None for d in hdata[2:]])
-                else:
-                    assert np.all(data.img_size == hdata.img_size)
+        cache_fn = os.path.join(cfg.cache_root, 'cached_HICO-DET_HAKE_data.pkl')
+        try:
+            with open(cache_fn, 'rb') as f:
+                self._img_data_per_split = pickle.load(f)
+        except FileNotFoundError:
+            img_data_per_split = {s: self.compute_img_data(split=s, driver=driver) for s in ['train', 'test']}  # type: Dict[str, List[GTImgData]]
+            hake_img_data = {s: self.compute_hake_img_data(split=s) for s in ['train']}  # type: Dict[str, List[GTImgData]]
 
-                    # New pstate labels
-                    new_ps_labels = np.zeros((data.labels.shape[0], self.num_states))
+            # Sanity check + add pstate info to HICO-DET annotations (which are more exhaustive than HICO-DET_HAKE's ones)
+            new_img_data_per_split = {'test': img_data_per_split['test']}  # type: Dict[str, List[GTImgData]]
+            for split in ['train']:
+                new_img_data_per_split[split] = []
+                for data, hdata in zip(img_data_per_split[split], hake_img_data[split]):
+                    new_data = data
 
-                    # HAKE annotations are missing some null interactions, so they are excluded from the comparison.
-                    d_fg_interactions = np.flatnonzero(self.interactions[np.where(data.labels)[1], 0] != 0)
-                    h_fg_interactions = np.flatnonzero(self.interactions[np.where(hdata.labels)[1], 0] != 0)
-                    assert d_fg_interactions.size == h_fg_interactions.size
+                    assert data.filename == hdata.filename
+                    if hdata.img_size is None:  # image should be empty
+                        assert all([d is None for d in data[2:]])
+                        assert all([d is None for d in hdata[2:]])
+                    else:
+                        assert np.all(data.img_size == hdata.img_size)
 
-                    if d_fg_interactions.size > 0:
-                        d_box_pairs = np.concatenate([data.boxes[data.ho_pairs[d_fg_interactions, 0], :],
-                                                      data.boxes[data.ho_pairs[d_fg_interactions, 1], :]
-                                                      ], axis=1)
-                        d_idxs = np.lexsort(d_box_pairs.T[::-1, :])
-                        assert d_idxs.size == d_fg_interactions.size  # make sure it just sorted and didn't remove anything
+                        # New pstate labels
+                        new_ps_labels = np.zeros((data.labels.shape[0], self.num_states))
 
-                        h_box_pairs = np.concatenate([hdata.boxes[hdata.ho_pairs[h_fg_interactions, 0], :],
-                                                      hdata.boxes[hdata.ho_pairs[h_fg_interactions, 1], :]
-                                                      ], axis=1)
-                        h_idxs = np.lexsort(h_box_pairs.T[::-1, :])
-                        assert h_idxs.size == h_fg_interactions.size  # make sure it just sorted and didn't remove anything
+                        # HAKE annotations are missing some null interactions, so they are excluded from the comparison.
+                        d_fg_interactions = np.flatnonzero(self.interactions[data.labels, 0] != 0)
+                        h_fg_interactions = np.flatnonzero(self.interactions[hdata.labels, 0] != 0)
+                        assert d_fg_interactions.size == h_fg_interactions.size
 
-                        h_to_d_hopairs_transf = h_idxs[np.argsort(d_idxs)]
+                        if d_fg_interactions.size > 0:
+                            d_box_pairs = np.concatenate([data.boxes[data.ho_pairs[d_fg_interactions, 0], :],
+                                                          data.boxes[data.ho_pairs[d_fg_interactions, 1], :]
+                                                          ], axis=1)
+                            d_idxs = np.lexsort(d_box_pairs.T[::-1, :])
+                            assert d_idxs.size == d_fg_interactions.size  # make sure it just sorted and didn't remove anything
 
-                        assert np.all(d_box_pairs == h_box_pairs[h_to_d_hopairs_transf, :])
-                        assert np.all(data.labels[d_fg_interactions, :] == hdata.labels[h_fg_interactions, :][h_to_d_hopairs_transf])
+                            h_box_pairs = np.concatenate([hdata.boxes[hdata.ho_pairs[h_fg_interactions, 0], :],
+                                                          hdata.boxes[hdata.ho_pairs[h_fg_interactions, 1], :]
+                                                          ], axis=1)
+                            h_idxs = np.lexsort(h_box_pairs.T[::-1, :])
+                            assert h_idxs.size == h_fg_interactions.size  # make sure it just sorted and didn't remove anything
 
-                        # Copy pstate labels from HAKE data for foreground interactions
-                        new_ps_labels[d_fg_interactions, :] = hdata.ps_labels[h_fg_interactions, :][h_to_d_hopairs_transf]
+                            h_to_d_hopairs_transf = h_idxs[np.argsort(d_idxs)]
 
-                    new_data = new_data._replace(ps_labels=new_ps_labels)
+                            assert np.all(d_box_pairs == h_box_pairs[h_to_d_hopairs_transf, :])
+                            assert np.all(data.labels[d_fg_interactions] == hdata.labels[h_fg_interactions][h_to_d_hopairs_transf])
 
-                new_img_data_per_split[split].append(new_data)
-        self._img_data_per_split = new_img_data_per_split
+                            # Copy pstate labels from HAKE data for foreground interactions
+                            new_ps_labels[d_fg_interactions, :] = hdata.ps_labels[h_fg_interactions, :][h_to_d_hopairs_transf]
+
+                        new_data = new_data._replace(ps_labels=new_ps_labels)
+
+                    new_img_data_per_split[split].append(new_data)
+            self._img_data_per_split = new_img_data_per_split
+            with open(cache_fn, 'wb') as f:
+                pickle.dump(self._img_data_per_split, f)
+
+    @staticmethod
+    def get_action_from_state(state):
+        assert ':' in state
+        return state.split(':')[1].strip()
+
+    @property
+    def labels_are_actions(self) -> bool:
+        return False
 
     @property
     def num_parts(self):
@@ -141,6 +185,14 @@ class HicoDetHake(HoiDataset):
     @property
     def num_states(self):
         return len(self.states)
+
+    @property
+    def num_symparts(self):
+        return len(self.symparts)
+
+    @property
+    def num_symstates(self):
+        return len(self.symstates)
 
     def get_img_data(self, split) -> List[GTImgData]:
         return self._img_data_per_split[split]
@@ -181,22 +233,20 @@ class HicoDetHake(HoiDataset):
                     im_ho_pairs.append(new_inters)
                     curr_num_boxes += num_hum_boxes + num_obj_boxes
 
-                    im_labels_onehot = np.zeros((num_inters, self.num_interactions))
-                    im_labels_onehot[np.arange(num_inters), inter_id] = 1
-                    im_interactions.append(im_labels_onehot)
+                    im_interactions.append(np.full(num_inters, fill_value=inter_id))
 
             gt_img_data = GTImgData(filename=img_ann['file'], img_size=img_ann['orig_img_size'][:2])
             if im_boxes:
                 im_boxes = np.concatenate(im_boxes, axis=0)
                 im_box_classes = np.concatenate(im_box_classes)
                 im_ho_pairs = np.concatenate(im_ho_pairs, axis=0)
-                im_interactions_onehot = np.concatenate(im_interactions, axis=0)
+                im_interactions = np.concatenate(im_interactions, axis=0)
 
                 im_boxes, u_idxs, inv_idxs = np.unique(im_boxes, return_index=True, return_inverse=True, axis=0)
                 im_box_classes = im_box_classes[u_idxs]
                 im_ho_pairs = np.stack([inv_idxs[im_ho_pairs[:, 0]], inv_idxs[im_ho_pairs[:, 1]]], axis=1)
 
-                gt_img_data = gt_img_data._replace(boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_interactions_onehot)
+                gt_img_data = gt_img_data._replace(boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs, labels=im_interactions)
 
             split_data.append(gt_img_data)
 
@@ -233,9 +283,7 @@ class HicoDetHake(HoiDataset):
 
                     im_ho_pairs.append([curr_num_boxes, curr_num_boxes + 1])
 
-                    hoi_label_onehot = np.zeros(self.num_interactions)
-                    hoi_label_onehot[hoi_id] = 1
-                    im_hoi_labels.append(hoi_label_onehot)
+                    im_hoi_labels.append(hoi_id)
 
                     hoi_state_labels_onehot = np.zeros(self.num_states)
                     for sl in hoi_ann.get('action_labels', []):
@@ -246,7 +294,7 @@ class HicoDetHake(HoiDataset):
                 im_boxes = np.stack(im_boxes, axis=0) - 1  # for some reason there is a discrepancy of one pixel with HICO-DET annotations
                 im_box_classes = np.array(im_box_classes)
                 im_ho_pairs = np.stack(im_ho_pairs, axis=0)
-                im_hoi_labels_onehot = np.stack(im_hoi_labels, axis=0)
+                im_hoi_labels = np.array(im_hoi_labels)
                 if im_state_labels:
                     im_state_labels = np.stack(im_state_labels, axis=0)
 
@@ -256,7 +304,7 @@ class HicoDetHake(HoiDataset):
 
                 gt_img_data = GTImgData(filename=fname, img_size=np.array(img_size),
                                         boxes=im_boxes, box_classes=im_box_classes, ho_pairs=im_ho_pairs,
-                                        labels=im_hoi_labels_onehot, ps_labels=im_state_labels)
+                                        labels=im_hoi_labels, ps_labels=im_state_labels)
             else:
                 gt_img_data = GTImgData(filename=fname, img_size=None)  # FIXME
 
@@ -370,8 +418,6 @@ class HicoDetDriver:
         for inter in interaction_list:
             if inter['act'] == 'no_interaction':
                 inter['act'] = self.null_interaction
-            if inter['obj'] == 'hair_drier':
-                inter['obj'] = 'hair_dryer'
 
         return train_annotations, test_annotations, interaction_list, wn_act_dict, act_dict
 
