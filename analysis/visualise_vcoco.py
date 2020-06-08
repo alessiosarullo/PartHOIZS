@@ -8,9 +8,10 @@ import matplotlib
 try:
     matplotlib.use('Qt5Agg')
     sys.argv[1:] = ['vis',
-                    '--gt',
+                    # '--gt',
                     '--pbb',
-                    # '--obb',
+                    '--obb',
+                    '--kp',
                     '--num_imgs', '-1',
                     '--vis',
                     '--max_ppl', '0', '--max_obj', '0']
@@ -47,7 +48,7 @@ def get_args():
     namespace = parser.parse_known_args()
     args = namespace[0]
     sys.argv = sys.argv[:1] + namespace[1]
-    cfg.parse_args(fail_if_missing=False, reset=True)
+    # cfg.parse_args(fail_if_missing=False, reset=True)
     return args
 
 
@@ -70,7 +71,7 @@ def vis_vcoco():
     os.makedirs(save_dir, exist_ok=True)
 
     ds = VCoco()
-    dssplit = VCocoSplit(split=split, full_dataset=ds)
+    dssplit = VCocoSplit(split=split, full_dataset=ds, use_precomputed_data=True)
 
     objects_str = ds.objects
     actions_str = ds.actions
@@ -106,7 +107,8 @@ def vis_vcoco():
         print(f'Image {idx + 1:6d}/{n}, file {fname}.')
 
         try:
-            img = Image.open(ds.get_img_path(split, fname))
+            img_path = ds.get_img_path(split, fname)
+            img = Image.open(img_path)
         except:
             print(f'Error on image {idx}: {fname}.')
             continue

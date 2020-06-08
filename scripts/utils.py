@@ -1,8 +1,6 @@
 import os
 from typing import Dict, Type, Set
 
-from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
 from lib.models.abstract_model import AbstractModel
 
 try:
@@ -80,6 +78,9 @@ def print_params(model, breakdown=False):
 
 
 def get_runs_data(runs):
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    # from torch.utils.tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
     """
     :param runs: list of directories, each representing a run
     :return: data: dict with one entry per split. Each entry is `split`: {'values': dict, 'steps': list}. Values is another dict in the form

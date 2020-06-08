@@ -188,8 +188,10 @@ class VCOCOeval(object):
     def _do_eval(self, detections_file, ovr_thresh=0.5, seen_acts_str=None):
         vcocodb = self._get_vcocodb()
         # self._do_agent_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh)
-        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_1', seen_acts_str=seen_acts_str)
-        self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_2', seen_acts_str=seen_acts_str)
+        role_ap1, a1_str = self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_1', seen_acts_str=seen_acts_str)
+        role_ap2, a2_str = self._do_role_eval(vcocodb, detections_file, ovr_thresh=ovr_thresh, eval_type='scenario_2', seen_acts_str=seen_acts_str)
+        assert a1_str == a2_str
+        return role_ap1, role_ap2, a1_str
 
     def _do_role_eval(self, vcocodb, detections_file, ovr_thresh=0.5, eval_type='scenario_1', seen_acts_str=None):
 
@@ -293,6 +295,7 @@ class VCOCOeval(object):
         # compute ap for each action
         role_ap = np.zeros((self.num_actions, 2), dtype=np.float32)
         role_ap[:] = np.nan
+        actions_with_role = [[None, None] for _ in range(self.num_actions)]
         for aid in range(self.num_actions):
             if len(self.roles[aid]) < 2:
                 continue
@@ -313,6 +316,7 @@ class VCOCOeval(object):
                 assert (np.amax(rec) <= 1)
                 prec = a_tp / np.maximum(a_tp + a_fp, np.finfo(np.float64).eps)
                 role_ap[aid, rid] = voc_ap(rec, prec)
+                actions_with_role[aid][rid] = f'{self.actions[aid]}_{self.roles[aid][rid + 1]}'
 
         role_ap_unseen = []
         print_str = []
@@ -327,6 +331,7 @@ class VCOCOeval(object):
                     a_str = '*' + a_str
                     role_ap_unseen.append(ap)
                 print_str.append(f'{a_str:>24s}: AP = {ap * 100.0:0.2f} (#pos = {int(npos[aid]):d})')
+
         print_str.append('Average Role [%s] AP = %.2f' % (eval_type, np.nanmean(role_ap) * 100.00))
         if role_ap_unseen:
             print_str.append('Average Role [%s] AP unseen = %.2f' % (eval_type, np.nanmean(np.array(role_ap_unseen)) * 100.00))
@@ -335,6 +340,7 @@ class VCOCOeval(object):
         print(print_str)
         with open(os.path.join(cfg.output_path, 'vcoco_eval.txt'), 'a') as f:
             f.write(print_str + '\n\n')
+        return role_ap, actions_with_role
 
     def _do_agent_eval(self, vcocodb, detections_file, ovr_thresh=0.5):
 

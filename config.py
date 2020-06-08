@@ -22,7 +22,7 @@ class Configs:
         # Print
         self.print_interval = 50
         self.log_interval = 100  # Tensorboard
-        self.eval_interval = 1
+        self.eval_interval = 10
         self.verbose = False
 
         # Experiment
@@ -46,6 +46,9 @@ class Configs:
         self.min_ppl_score = 0.95  # this is very high because it's a threshold over KP estimation scores, which are on people only
         self.max_ppl = 3
         self.max_obj = 3
+
+        # Features
+        self.feat_norm = False
 
         # Dataset
         self.ds = ''
@@ -77,23 +80,18 @@ class Configs:
         self.cspc = 0.0  # Use cost-sensitive coefficients for positive examples
         self.cspbgc_p = 0.0  # Cost-sensitive coefficient for positive background (null) examples of part actions
         self.cspc_p = 0.0  # Cost-sensitive coefficient for positive examples of part actions
-        self.ptos = False  # Use pre-trained object scores
-        # Cost-sensitive loss, [soft labels, regularisation]
-        self.ocs = False
-        #
-        self.acs = False
+        self.att_sp_c = 1.0  # Coefficient for sparsity loss on attention weights
+        # Action Weak Supervision loss (Unseen, Logic - Necessary, Logic - Sufficient, Logic - Threshold, Logic - apply to Unseen Only).
         self.awsu = 0.0
-        self.awsu_fp = 0.0
-        self.agcnr = 0.0
-        #
-        self.awsln = 5.0
-        self.awsls = 5.0
+        self.awsln = 1.0
+        self.awsln_neg = 5.0
+        self.awsls = 1.0
+        self.awsls_pos = 5.0
         self.awslt = 0.5
         self.awsl_uonly = False
-        # Regularisation
-        self.grm = 0.3  # margin in graph regularisation
-        self.grg = 0  # gamma in graph regularisation
-        self.grseen = False
+
+        # Graph regularisation  # FIXME
+        self.agreg = 0.0
 
         # Interactiveness (actually more like spatial configuration: interactiveness detection is one possible usage)
         self.tin = False
@@ -171,7 +169,7 @@ class Configs:
 
     @property
     def output_path(self):
-        return os.path.join(self.output_root, self.model, self.save_dir)
+        return os.path.join(self.output_root, self.ds, self.model, self.save_dir)
 
     @property
     def config_file(self):
@@ -259,13 +257,17 @@ class Configs:
         if '/' in self.save_dir:
             save_dir_parts = self.save_dir.split('/')
             if save_dir_parts[0] == self.output_root:
-                assert len(save_dir_parts) >= 3
+                assert len(save_dir_parts) >= 4
                 old_save_dir = self.save_dir
-                self.save_dir = os.path.join(*save_dir_parts[2:])
-                self.model = self.model or save_dir_parts[1]
+                self.save_dir = os.path.join(*save_dir_parts[3:])  # skip 'output', dataset, model
+                self.ds = self.ds or save_dir_parts[1]
+                self.model = self.model or save_dir_parts[2]
                 assert old_save_dir == self.output_path
-        if fail_if_missing and self.model is None:
-            raise ValueError('A model is required.')
+        if fail_if_missing:
+            if not self.ds:
+                raise ValueError('A dataset is required.')
+            if self.model is None:
+                raise ValueError('A model is required.')
 
         if self.lr == 0:
             self.lr = self._def_lr_sgd if self.sgd else self._def_lr_adam
@@ -288,14 +290,14 @@ class Configs:
             save_dir = self.save_dir
             resume = self.resume
             num_epochs = self.num_epochs
-            eval_on = self.eval_split
+            eval_split = self.eval_split
             vceval = self.vceval
 
             # Load
             self.__dict__.update(d)
 
             # Restore
-            self.eval_split = eval_on
+            self.eval_split = eval_split
             self.vceval = vceval
             self.save_dir = save_dir
             self.resume = resume
@@ -311,8 +313,10 @@ class Configs:
 
     def __str__(self):
         s = []
-        for k in sorted(self.__dict__.keys()):
-            s += ['%-30s %s' % (k, self.__dict__[k])]
+        selfdict = self.__dict__
+        for k in sorted(selfdict.keys()):
+            v = selfdict[k]
+            s += [f'{k:<35s} {str(v.__class__.__name__):10s} {str(v)}']
         return '{0}\nConfigs\n{0}\n{1}\n{0}\n{0}'.format('=' * 70, '\n'.join(s))
 
 

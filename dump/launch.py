@@ -40,7 +40,6 @@ class Launcher:
 
     def run(self):
         # Parse configs
-        self._reset()
         cfg.parse_args(reset=True)
         Timer.gpu_sync = cfg.sync
         if cfg.debug:
@@ -55,6 +54,7 @@ class Launcher:
         if cfg.eval_only or cfg.resume:
             cfg.load()
         cfg.print()
+        self._reset()
 
         # Run the experiment
         if cfg.eval_only:
@@ -382,6 +382,7 @@ class Launcher:
                                       coco_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'instances_vcoco_all_2014.json'),
                                       split_file=os.path.join(cfg.data_root, 'V-COCO', 'splits', 'vcoco_test.ids')
                                       )
+
                 det_file = os.path.join(cfg.output_path, 'vcoco_pred.pkl')
                 pkl_from_predictions(dict_predictions=predictions, dataset=dataset, filename=det_file)
                 evaluator._do_eval(det_file, ovr_thresh=0.5, seen_acts_str=[dataset.actions[i] for i in seen] if seen is not None else None)

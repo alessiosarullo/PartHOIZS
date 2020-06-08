@@ -167,7 +167,7 @@ class VisImage:
             # noinspection PyUnresolvedReferences
             import numexpr  # fuse them with numexpr
 
-            visualized_image = numexpr.evaluate("img * (1 - alpha / 255.0) + rgb * (alpha / 255.0)")
+            visualized_image = numexpr.evaluate_only("img * (1 - alpha / 255.0) + rgb * (alpha / 255.0)")
         except ImportError:
             alpha = alpha.astype("float32") / 255.0
             visualized_image = img * (1 - alpha) + rgb * alpha

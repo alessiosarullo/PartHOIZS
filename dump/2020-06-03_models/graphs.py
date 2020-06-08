@@ -552,7 +552,7 @@ def _check(hoi_ds: HoiDataset):
 
 
 def main():
-    test = 4
+    test = 3
     if test == 0:
         cfg.ds = 'hico'
         cfg.seen = 4

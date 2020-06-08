@@ -1,5 +1,6 @@
 import pickle
 import sys
+import os
 
 import matplotlib
 
@@ -22,6 +23,7 @@ from lib.dataset.hicodet_hake import HicoDetHake, HicoDetHakeSplit
 from lib.models.abstract_model import Prediction
 from lib.eval.evaluator_vcoco_roi import EvaluatorVCocoROI
 from lib.eval.evaluator_hicodethake_pstate import EvaluatorHicoDetHakePartROI
+from lib.eval.vsrl_eval import VCOCOeval, pkl_from_predictions
 
 
 def _setup_and_load():
@@ -105,119 +107,62 @@ def part_model():
 
 
 def act_model():
-    def _branch_att_per_action(_extra_info, _pred_gt_ho_assignment, _gt_labels, _ds):
-        assert len(_extra_info) == 1
-        branch_att = _extra_info[list(_extra_info.keys())[0]]
-        print(len(branch_att))
+    def _w_per_action(_weights, _pred_gt_ho_assignment, _gt_labels, _ds):
+        print(len(_weights))
 
-        branch_att_per_act = {}
-        for b_att, gt_assignment in zip(branch_att, _pred_gt_ho_assignment):
+        _weights_per_act = {}
+        for ps_w, gt_assignment in zip(_weights, _pred_gt_ho_assignment):
             for i, gt_idx in enumerate(gt_assignment):
                 if gt_idx >= 0:
                     assert _gt_labels[gt_idx] == i
-                    branch_att_per_act.setdefault(i, []).append(b_att)
-        assert not set(branch_att_per_act.keys()) - set(range(_ds.num_actions))
-        branch_att_per_act = [np.stack(branch_att_per_act[i], axis=0) if i in branch_att_per_act else np.zeros((0, 2, 2))
-                              for i in range(_ds.num_actions)]
-        print([v.shape[0] for v in branch_att_per_act])
-        assert all([np.allclose(np.sum(x, axis=2), 1) for x in branch_att_per_act])
-
-        aggr_branch_att_per_act = np.stack([x.mean(axis=0) for x in branch_att_per_act], axis=0)
-        assert np.allclose(aggr_branch_att_per_act[np.any(~np.isnan(aggr_branch_att_per_act), axis=(1, 2)), :, :].sum(axis=2), 1)
-        aggr_branch_att_per_act[np.isnan(aggr_branch_att_per_act)] = 0
-        aggr_dir_branch_att_per_act = aggr_branch_att_per_act[:, 0, :]
-        return aggr_dir_branch_att_per_act
-
-    def _pstate_att_per_action(_extra_info, _pred_gt_ho_assignment, _gt_labels, _ds):
-        pstate_att = _extra_info['act__pstate_att']
-        print(len(pstate_att))
-
-        pstate_att_per_act = {}
-        for b_att, gt_assignment in zip(pstate_att, _pred_gt_ho_assignment):
-            for i, gt_idx in enumerate(gt_assignment):
-                if gt_idx >= 0:
-                    assert _gt_labels[gt_idx] == i
-                    pstate_att_per_act.setdefault(i, []).append(b_att)
-        assert not set(pstate_att_per_act.keys()) - set(range(_ds.num_actions))
-        pstate_att_per_act = [np.stack(pstate_att_per_act[i], axis=0) if i in pstate_att_per_act else np.zeros((0, hh.num_states))
-                              for i in range(_ds.num_actions)]
-        print([v.shape[0] for v in pstate_att_per_act])
-        assert all([np.allclose(np.sum(x, axis=1), 1) for x in pstate_att_per_act])
-
-        aggr_pstate_att_per_act = np.stack([x.mean(axis=0) for x in pstate_att_per_act], axis=0)
-        assert np.allclose(aggr_pstate_att_per_act[np.any(~np.isnan(aggr_pstate_att_per_act), axis=1), :].sum(axis=1), 1)
-        aggr_pstate_att_per_act[np.isnan(aggr_pstate_att_per_act)] = 0
-        return aggr_pstate_att_per_act
-
-    def _part_att_per_action(_extra_info, _pred_gt_ho_assignment, _gt_labels, _ds):
-        part_att = _extra_info['act__part_att']
-        print(len(part_att))
-
-        part_att_per_act = {}
-        for b_att, gt_assignment in zip(part_att, _pred_gt_ho_assignment):
-            for i, gt_idx in enumerate(gt_assignment):
-                if gt_idx >= 0:
-                    assert _gt_labels[gt_idx] == i
-                    part_att_per_act.setdefault(i, []).append(b_att)
-        assert not set(part_att_per_act.keys()) - set(range(_ds.num_actions))
-        part_att_per_act = [np.stack(part_att_per_act[i], axis=0) if i in part_att_per_act else np.zeros((0, hh.num_parts))
+                    _weights_per_act.setdefault(i, []).append(ps_w)
+        assert not set(_weights_per_act.keys()) - set(range(_ds.num_actions))
+        _weights_per_act = [np.stack(_weights_per_act[i], axis=0) if i in _weights_per_act else None
                             for i in range(_ds.num_actions)]
-        print([v.shape[0] for v in part_att_per_act])
-        assert all([np.allclose(np.sum(x, axis=1), 1) for x in part_att_per_act])
-
-        aggr_part_att_per_act = np.stack([x.mean(axis=0) for x in part_att_per_act], axis=0)
-        assert np.allclose(aggr_part_att_per_act[np.any(~np.isnan(aggr_part_att_per_act), axis=1), :].sum(axis=1), 1)
-        aggr_part_att_per_act[np.isnan(aggr_part_att_per_act)] = 0
-        return aggr_part_att_per_act
-
-    def _pstate_weights(_extra_info, _pred_gt_ho_assignment, _gt_labels, _ds):
-        pstate_weights = _extra_info['act__state_weights']
-        print(len(pstate_weights))
-
-        pstate_weights_per_act = {}
-        for ps_w, gt_assignment in zip(pstate_weights, _pred_gt_ho_assignment):
-            for i, gt_idx in enumerate(gt_assignment):
-                if gt_idx >= 0:
-                    assert _gt_labels[gt_idx] == i
-                    pstate_weights_per_act.setdefault(i, []).append(ps_w[i, :])
-        assert not set(pstate_weights_per_act.keys()) - set(range(_ds.num_actions))
-        pstate_weights_per_act = [np.stack(pstate_weights_per_act[i], axis=0) if i in pstate_weights_per_act else None
-                                  for i in range(_ds.num_actions)]
-        shape1 = list({x.shape[1] for x in pstate_weights_per_act if x is not None})
+        shape1 = list({x.shape[1] for x in _weights_per_act if x is not None})
         assert len(shape1) == 1
-        pstate_weights_per_act = [x if x is not None else np.zeros((0, shape1[0])) for x in pstate_weights_per_act]
-        print([x.shape[0] for x in pstate_weights_per_act])
+        _weights_per_act = [x if x is not None else np.zeros((0, shape1[0])) for x in _weights_per_act]
+        print([x.shape[0] for x in _weights_per_act])
 
-        aggr_part_att_per_act = np.stack([x.mean(axis=0) for x in pstate_weights_per_act], axis=0)
-        aggr_part_att_per_act[np.isnan(aggr_part_att_per_act)] = 0
-        return aggr_part_att_per_act
+        aggr_w_per_act = np.stack([x.mean(axis=0) for x in _weights_per_act], axis=0)
+        aggr_w_per_act[np.isnan(aggr_w_per_act)] = 0
+        return aggr_w_per_act
 
     exps = [
         # 'output/act/vcoco_nozs/nopart/2020-04-16_15-25-24_SINGLE',
         # 'output/frompstate/vcoco_nozs/pbf/2020-04-21_11-13-05_SINGLE',
-        'output/act/vcoco_nozs/pbf/2020-05-01_10-53-43_SINGLE',
-        'output/logic/vcoco_nozs/pbf/2020-05-01_11-05-44_SINGLE',
+        # 'output/act/vcoco_nozs/pbf/2020-05-01_10-53-43_SINGLE',
+        # 'output/logic/vcoco_nozs/pbf/2020-05-01_11-05-44_SINGLE',
 
+        'output/act/vcoco_zs1_nopart/awsu1/2020-05-21_15-44-35_SINGLE',
         # 'output/act/vcoco_zs1/pbf_awsu1_oracle/2020-04-15_16-52-04_SINGLE',
-        'output/act/vcoco_zs1/pbf_awsu1/2020-04-28_16-28-36_SINGLE',
+        'output/act/vcoco_zs1_pbf/awsu1/2020-05-22_12-42-24_SINGLE',
 
-        # 'output/pgcnact/vcoco_zs1/pbf_awsu1/2020-04-29_09-59-45_SINGLE',
+        # 'output/att/vcoco_zs1_pbf/attsp1_awsu1/2020-05-22_16-57-37_SINGLE',
 
-        'output/late/vcoco_zs1/pbf_awsu1/2020-04-30_16-48-07_SINGLE',
+        # 'output/late/vcoco_zs1_pbf/awsu1/2020-05-21_16-06-27_SINGLE',
 
-        'output/lateatt/vcoco_zs1/pbf_awsu1/2020-04-30_17-51-42_SINGLE',
+        # 'output/lateatt/vcoco_zs1/pbf_awsu1/2020-05-14_13-15-06_SINGLE',
 
-        'output/logic/vcoco_zs1/pbf_awsu1/2020-04-28_17-44-43_SINGLE',
-
-
+        'output/logic/vcoco_zs1/pbf_awsu1/2020-05-14_13-44-37_SINGLE',
     ]
     to_plot = []
     measure_labels = []
+    alternate_labels = False
 
     hh = HicoDetHake()
 
+    use_vsrl_eval = False
+
     ds = VCoco()
-    evaluator = EvaluatorVCocoROI(dataset_split=VCocoSplit(split='test', full_dataset=ds))
+    ds_split = VCocoSplit(split='test', full_dataset=ds)
+    if use_vsrl_eval:
+        evaluator = VCOCOeval(vsrl_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'vcoco', 'vcoco_test.json'),
+                              coco_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'instances_vcoco_all_2014.json'),
+                              split_file=os.path.join(cfg.data_root, 'V-COCO', 'splits', 'vcoco_test.ids')
+                              )
+    else:
+        evaluator = EvaluatorVCocoROI(dataset_split=ds_split)
     seen_acts = None
     for exp in exps:
         sys.argv[1:] = ['--save_dir', exp]
@@ -228,15 +173,23 @@ def act_model():
             assert seen_acts is None or np.all(seen_acts == _seen_acts)
             seen_acts = _seen_acts
 
-        # Get prediction assignments
-        evaluator.evaluate_predictions(predictions=predictions)
-        gt_labels = np.concatenate(evaluator.gt_labels)
-        pred_gt_ho_assignment = np.concatenate(evaluator.pred_gt_assignment_per_hoi, axis=0)
-        print(gt_labels.size, pred_gt_ho_assignment.shape)
+        if use_vsrl_eval:
+            det_file = os.path.join(cfg.output_path, 'vcoco_pred.pkl')
+            pkl_from_predictions(dict_predictions=predictions, dataset=ds_split, filename=det_file)
+            seen_acts_str = [ds_split.actions[i] for i in seen_acts] if seen_acts is not None else None
+            map1, map2, actions_with_role = evaluator._do_eval(det_file, ovr_thresh=0.5, seen_acts_str=seen_acts_str)
+            map1_inv = {ar: map1[i][j] for i, a_roles in enumerate(actions_with_role) for j, ar in enumerate(a_roles) if ar is not None}
+            mAP = np.array([map1_inv.get(a, 0) for a in ds.actions])
+        else:
+            # Get prediction assignments
+            evaluator.evaluate_predictions(predictions=predictions)
+            gt_labels = np.concatenate(evaluator.gt_labels)
+            pred_gt_ho_assignment = np.concatenate(evaluator.pred_gt_assignment_per_hoi, axis=0)
+            print(gt_labels.size, pred_gt_ho_assignment.shape)
 
-        # Get mAP
-        evaluator.compute_metrics()
-        mAP = evaluator.metrics['M-mAP']
+            # Get mAP
+            evaluator.compute_metrics()
+            mAP = evaluator.metrics['M-mAP']
         exp_to_plot = [mAP[:, None]]
         exp_ax_labels = ['mAP']
 
@@ -251,33 +204,27 @@ def act_model():
 
         # Get the attention coefficients per action
         try:
-            raise KeyError
+            # raise KeyError
             if extra_info:
 
                 extra_info = {k: np.concatenate(v, axis=0) for k, v in extra_info.items()}
                 if cfg.model == 'att':
-                    ei_ind = 2
-                elif cfg.model == 'pgcnact':
-                    ei_ind = 3
+                    ei_ind = 1
+                    # extra_info['act__mha_weights'] = extra_info['act__mha_weights'].mean(axis=1)
+                elif cfg.model == 'lateatt':
+                    ei_ind = 0
                 else:
                     ei_ind = None
 
                 if ei_ind == 0:
-                    aggr_dir_branch_att_per_act = _branch_att_per_action(extra_info, pred_gt_ho_assignment, gt_labels, ds)
-                    exp_to_plot.append(aggr_dir_branch_att_per_act)
-                    exp_ax_labels.extend(['Vis', 'Part'])
+                    aggr_featatt_per_act = _w_per_action(extra_info['act__mha_weights'], pred_gt_ho_assignment, gt_labels, ds)
+                    exp_to_plot.append(aggr_featatt_per_act)
+                    exp_ax_labels.extend(['Img', 'Ex', 'Obj scores', 'State scores'])
                 elif ei_ind == 1:
-                    aggr_pstate_att_per_act = _pstate_att_per_action(extra_info, pred_gt_ho_assignment, gt_labels, ds)
-                    exp_to_plot.append(aggr_pstate_att_per_act)
-                    exp_ax_labels.extend(hh.states)
-                elif ei_ind == 2:
-                    aggr_part_att_per_act = _part_att_per_action(extra_info, pred_gt_ho_assignment, gt_labels, ds)
-                    exp_to_plot.append(aggr_part_att_per_act)
-                    exp_ax_labels.extend(hh.parts)
-                elif ei_ind == 3:
-                    aggr_psw_per_act = _pstate_weights(extra_info, pred_gt_ho_assignment, gt_labels, ds)
-                    exp_to_plot.append(aggr_psw_per_act)
-                    exp_ax_labels.extend(hh.symstates)
+                    aggr_featatt_per_act = _w_per_action(extra_info['act__att_w'], pred_gt_ho_assignment, gt_labels, ds)
+                    exp_to_plot.append(aggr_featatt_per_act)
+                    exp_ax_labels.extend(['Img', 'Ex'] + hh.objects + hh.objects + hh.symstates)
+                    alternate_labels = 'x'
         except KeyError:
             print('No suitable extra info!')
 
@@ -311,7 +258,7 @@ def act_model():
              yticklabels=y_labels,
              neg_color=[1, 0, 1],
              zero_color=[1, 1, 1],
-             alternate_labels=False,
+             alternate_labels=alternate_labels,
              vrange=(0, 1),
              annotate=max(to_plot_ext.shape) <= 60,
              figsize=(22, 12),

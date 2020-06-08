@@ -13,8 +13,9 @@ from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, AbstractModule, \
     PartStateBranch, FrozenPartStateBranch, \
-    ActZSBranch, FromPartStateLogitsBranch, \
-    AttBranch, PartStateInReprBranch, LogicBranch
+    ZSGCBranch, FromPartStateLogitsBranch, AttBranch, PartStateInReprBranch, PartWeightedZSGCBranch, LogicBranch, \
+    LateFusionBranch, LateFusionAttBranch
+from lib.models.gcns import BipartiteGCN
 from lib.models.graphs import get_vcoco_graphs, get_cocoa_graphs
 
 
@@ -30,7 +31,7 @@ class AbstractTriBranchModel(AbstractModel):
         self.part_dataset = None if cfg.no_part else HicoDetHake()  # type: Union[None, HicoDetHake]
         self.zs_enabled = (cfg.seenf >= 0)
         self.part_only = part_only
-        self.predict_act = True
+        self.predict_act = False
 
         self.repr_dims = [cfg.repr_dim0, cfg.repr_dim1]
 
@@ -55,22 +56,39 @@ class AbstractTriBranchModel(AbstractModel):
 
         self.branches = nn.ModuleDict()
         if not cfg.no_part:
+            self._init_part_branch()
             if cfg.pbf:
-                self.branches['part'] = FrozenPartStateBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
                 ckpt = torch.load(cfg.pbf)
                 state_dict = {k: v for k, v in ckpt['state_dict'].items() if k.startswith('branches.part.')}
                 try:
                     self.load_state_dict(state_dict)
                 except RuntimeError:
                     raise RuntimeError('Use --tin option.')  # FIXME
-            else:
-                self.branches['part'] = PartStateBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
         if not self.part_only:
             if self.zs_enabled:
                 print('Zero-shot enabled.')
+                self._init_gcn()
+            if cfg.obj:
+                self._init_obj_branch()
             self._init_act_branch()
+            self._init_hoi_branch()
+
+    def _init_part_branch(self):
+        if cfg.pbf:
+            self.branches['part'] = FrozenPartStateBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        else:
+            self.branches['part'] = PartStateBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+
+    def _init_obj_branch(self):
+        self.branches['obj'] = ZSGCBranch(label_type='obj', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
 
     def _init_act_branch(self):
+        pass
+
+    def _init_hoi_branch(self):
+        pass
+
+    def _init_gcn(self):
         pass
 
     def forward(self, x: Minibatch, inference=True, **kwargs):
@@ -151,13 +169,25 @@ class ActModel(AbstractTriBranchModel):
 
     def __init__(self, dataset: HoiDatasetSplit, **kwargs):
         super().__init__(dataset, **kwargs)
+        self.predict_act = True
 
     def _init_act_branch(self):
         if cfg.no_part:
-            branch_class = ActZSBranch
+            branch_class = ZSGCBranch
         else:
             branch_class = PartStateInReprBranch
-        self.branches['act'] = branch_class(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        self.branches['act'] = branch_class(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims,
+                                            use_dir_repr=not cfg.no_dir)
+
+    def _init_gcn(self):
+        gc_latent_dim = cfg.gcldim
+        gc_emb_dim = cfg.gcrdim
+        gc_dims = ((gc_emb_dim + gc_latent_dim) // 2, gc_latent_dim)
+        self.affordance_gcn = BipartiteGCN(adj_block=self.cache.oa_adj, input_dim=gc_emb_dim, gc_dims=gc_dims)
+
+    def _forward(self, x: Minibatch, inference=True):
+        if self.zs_enabled:
+            self.cache['oa_gcn_obj_class_embs'], self.cache['oa_gcn_act_class_embs'] = self.affordance_gcn()
 
 
 class LogicActModel(ActModel):
@@ -167,9 +197,24 @@ class LogicActModel(ActModel):
 
     def __init__(self, dataset: HoiDatasetSplit, **kwargs):
         super().__init__(dataset, **kwargs)
+        self.predict_act = True
 
     def _init_act_branch(self):
-        self.branches['act'] = LogicBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        self.branches['act'] = LogicBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims,
+                                           use_dir_repr=not cfg.no_dir)
+
+
+class PartGcnActModel(AbstractTriBranchModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'pgcnact'
+
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+        self.predict_act = True
+
+    def _init_act_branch(self):
+        self.branches['act'] = PartWeightedZSGCBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
 
 
 class FromPStateActModel(ActModel):
@@ -181,7 +226,33 @@ class FromPStateActModel(ActModel):
         super().__init__(dataset, **kwargs)
 
     def _init_act_branch(self):
-        self.branches['act'] = FromPartStateLogitsBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        self.branches['act'] = FromPartStateLogitsBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+
+
+class LateActModel(ActModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'late'
+
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+
+    def _init_act_branch(self):
+        self.branches['act'] = LateFusionBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims,
+                                                use_dir_repr=not cfg.no_dir)
+
+
+class LateAttActModel(ActModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'lateatt'
+
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+
+    def _init_act_branch(self):
+        self.branches['act'] = LateFusionAttBranch(label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims,
+                                                   use_dir_repr=not cfg.no_dir)
 
 
 class AttActModel(ActModel):
@@ -194,4 +265,5 @@ class AttActModel(ActModel):
 
     def _init_act_branch(self):
         self.branches['act'] = AttBranch(part_repr_dim=self.branches['part'].repr_dims[1],
-                                         dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+                                         label_type='act', dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims,
+                                         use_dir_repr=not cfg.no_dir)

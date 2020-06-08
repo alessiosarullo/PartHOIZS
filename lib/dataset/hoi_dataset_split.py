@@ -154,6 +154,7 @@ class FeatProvider(torch.utils.data.Dataset):
         self.full_dataset = self.wrapped_ds.full_dataset
         self.split = self.wrapped_ds.split
         self.keep_inds = self.holdout_inds = None  # These will be set later, if needed.
+        self.holdout_ratio = None  # This will be set later, if needed.
 
         #############################################################################################################################
         # Load precomputed data
@@ -298,13 +299,16 @@ class FeatProvider(torch.utils.data.Dataset):
         return all_img_data
 
     def hold_out(self, ratio):
+        assert self.holdout_ratio is None
+        self.holdout_ratio = ratio
+
         if cfg.include_bg_only:
             num_examples = len(self)
             ex_inds = np.arange(num_examples)
         else:
             num_examples = len(self.non_empty_inds)
             ex_inds = self.non_empty_inds
-        num_to_keep = num_examples - int(num_examples * ratio)
+        num_to_keep = num_examples - int(num_examples * self.holdout_ratio)
         keep_inds = np.random.choice(ex_inds, size=num_to_keep, replace=False)
         self.keep_inds = keep_inds
         self.holdout_inds = np.setdiff1d(ex_inds, keep_inds)
@@ -325,23 +329,18 @@ class FeatProvider(torch.utils.data.Dataset):
                 shuffle = not holdout_set
             if drop_last is None:
                 drop_last = True
-
-            if self.keep_inds is None:
-                assert self.holdout_inds is None and holdout_set is False
-                split_inds = None
-            else:
-                split_inds = self.holdout_inds if holdout_set else self.keep_inds
-
-            data_loader = self._get_train_loader(split_inds=split_inds,
-                                                 batch_size=batch_size,
-                                                 shuffle=shuffle,
-                                                 drop_last=drop_last,
-                                                 **kwargs)
+            data_loader = self._get_train_loader(batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, holdout_set=holdout_set, **kwargs)
         return data_loader
 
-    def _get_train_loader(self, split_inds, batch_size, shuffle, drop_last, **kwargs):
+    def _get_train_loader(self, batch_size, shuffle, drop_last, holdout_set, **kwargs):
+        if self.keep_inds is None:
+            assert self.holdout_inds is None and holdout_set is False
+            ds = self
+        else:
+            ds = torch.utils.data.Subset(self, indices=self.holdout_inds if holdout_set else self.keep_inds)
+
         data_loader = torch.utils.data.DataLoader(
-            dataset=self if split_inds is None else torch.utils.data.Subset(self, split_inds),
+            dataset=ds,
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
@@ -372,6 +371,8 @@ class FeatProvider(torch.utils.data.Dataset):
 
 class HoiInstancesFeatProvider(FeatProvider):
     def __init__(self, ds_name, *args, **kwargs):
+        if cfg.include_bg_only:
+            raise NotImplementedError('Background-only images would only increase the number of possible negatives to sample from.')
         super().__init__(ds_name=ds_name, max_ppl=0, max_obj=0, *args, **kwargs)
         self.hoi_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}__hoi_pairs_{self.split}.h5')
         ho_infos = PrecomputedFilesHandler.get(self.hoi_fn, 'ho_infos', load_in_memory=True)
@@ -415,14 +416,9 @@ class HoiInstancesFeatProvider(FeatProvider):
             assert self.ho_infos.shape[0] == _labels.shape[0]
             if self.full_dataset.labels_are_actions:
                 self.hoi_obj_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
-                negatives = (_labels[:, 0] > 0)
-                positives = np.any(_labels[:, 1:] > 0, axis=1)
-            else:
-                null_interactions = (self.full_dataset.interactions[:, 0] == 0)
-                negatives = np.any(_labels[:, null_interactions] > 0, axis=1)
-                positives = np.any(_labels[:, ~null_interactions] > 0, axis=1)
-            assert np.all(negatives ^ positives)
-            print(f'Negatives per positive: {np.sum(negatives) / np.sum(positives)}')
+            positives, negatives = self._get_pos_neg_mask(_labels)
+            assert np.all(positives ^ negatives)
+            print(f'Negatives per positive (before ZS): {np.sum(negatives) / np.sum(positives)}.')
             self.labels = _labels
 
             try:
@@ -434,17 +430,68 @@ class HoiInstancesFeatProvider(FeatProvider):
             self.non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
             # non_empty_imgs = np.unique(self.ho_infos[:, 0])
 
+            # Compute masks for positives and negatives. This has to be done again to take into account possibly removed ZS labels.
+            # Note: negatives = background, as opposed to not being labelled at all.
+            positives, negatives = self._get_pos_neg_mask(self.labels)
+            assert np.all((positives ^ negatives) | (~self.labels.any(axis=1)))  # Sanity check: either positive, negative or unlabelled
+            assert np.all((positives ^ negatives)[self.non_empty_inds])  # Sanity check: if labelled, either positive or negative
+            print(f'Negatives per positive (after ZS): {np.sum(negatives) / np.sum(positives)}.')
+            self.positives_mask = positives
+            self.negatives_mask = negatives
+
+    def _get_pos_neg_mask(self, labels):
+        if self.full_dataset.labels_are_actions:
+            positives = np.any(labels[:, 1:] > 0, axis=1)
+            negatives = (labels[:, 0] > 0)
+        else:
+            null_interactions = (self.full_dataset.interactions[:, 0] == 0)
+            positives = np.any(labels[:, ~null_interactions] > 0, axis=1)
+            negatives = np.any(labels[:, null_interactions] > 0, axis=1)
+        return positives, negatives
+
     def __len__(self):
         return self.ho_infos.shape[0]
 
-    def _get_train_loader(self, split_inds, batch_size, shuffle, drop_last, **kwargs):
+    def hold_out(self, ratio):
+        assert self.holdout_ratio is None
+        self.holdout_ratio = ratio
+
+        num_positives = np.sum(self.positives_mask)
+        pos_inds = np.flatnonzero(self.positives_mask)
+        pos_to_keep = num_positives - int(num_positives * self.holdout_ratio)
+        pos_keep_inds = np.random.choice(pos_inds, size=pos_to_keep, replace=False)
+
+        num_negatives = np.sum(self.negatives_mask)
+        neg_inds = np.flatnonzero(self.negatives_mask)
+        neg_to_keep = num_negatives - int(num_negatives * self.holdout_ratio)
+        neg_keep_inds = np.random.choice(neg_inds, size=neg_to_keep, replace=False)
+
+        keep_inds = np.union1d(pos_keep_inds, neg_keep_inds)
+        assert np.intersect1d(pos_keep_inds, neg_keep_inds).size == 0  # either positive or negative
+        assert np.intersect1d(keep_inds, self.non_empty_inds).size == keep_inds.size  # no unlabelled examples
+
+        self.keep_inds = keep_inds
+        self.holdout_inds = np.setdiff1d(self.non_empty_inds, keep_inds)
+
+    def _get_train_loader(self, batch_size, shuffle, drop_last, holdout_set, **kwargs):
+        pos_samples = np.flatnonzero(self.positives_mask)
+        neg_samples = np.flatnonzero(self.negatives_mask)
+        if self.keep_inds is None:
+            assert self.holdout_inds is None and holdout_set is False
+        else:
+            split_inds = self.holdout_inds if holdout_set else self.keep_inds
+            pos_samples = np.intersect1d(pos_samples, split_inds)
+            neg_samples = np.intersect1d(neg_samples, split_inds)
+
         data_loader = torch.utils.data.DataLoader(
             dataset=self,
             batch_sampler=BalancedTripletSampler(self,
                                                  batch_size=batch_size,
                                                  drop_last=drop_last,
                                                  shuffle=shuffle,
-                                                 split_inds=split_inds),
+                                                 pos_samples=pos_samples,
+                                                 neg_samples=neg_samples,
+                                                 ),
             collate_fn=lambda x: self.collate(x),
             **kwargs,
         )
@@ -597,7 +644,7 @@ class HoiInstancesFeatProvider(FeatProvider):
 
 
 class BalancedTripletSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset: HoiInstancesFeatProvider, batch_size, drop_last, shuffle, split_inds=None):
+    def __init__(self, dataset: HoiInstancesFeatProvider, batch_size, drop_last, shuffle, pos_samples, neg_samples):
         super().__init__(dataset)
         if not drop_last:
             raise NotImplementedError()
@@ -608,24 +655,8 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.dataset = dataset
 
-        # Note: negatives = background, as opposed to not being labelled at all
-        labels = dataset.labels
-        if dataset.full_dataset.labels_are_actions:
-            pos_hois_mask = np.any(labels[:, 1:], axis=1)
-            neg_hois_mask = (labels[:, 0] > 0)
-        else:
-            null_interactions = (dataset.full_dataset.interactions[:, 0] == 0)
-            pos_hois_mask = np.any(labels[:, ~null_interactions] > 0, axis=1)
-            neg_hois_mask = np.any(labels[:, null_interactions] > 0, axis=1)
-
-        # Sanity check: either positive, negative or unlabelled
-        assert np.all((pos_hois_mask ^ neg_hois_mask) | (~labels.any(axis=1)))
-        if not cfg.include_bg_only:
-            assert np.all((pos_hois_mask ^ neg_hois_mask)[dataset.non_empty_inds])
-
-        split_inds = split_inds if split_inds is not None else np.arange(pos_hois_mask.size)
-        self.pos_samples = np.intersect1d(np.flatnonzero(pos_hois_mask), split_inds)  # type: np.ndarray
-        self.neg_samples = np.intersect1d(np.flatnonzero(neg_hois_mask), split_inds)  # type: np.ndarray
+        self.pos_samples = pos_samples  # type: np.ndarray
+        self.neg_samples = neg_samples  # type: np.ndarray
 
         self.neg_pos_ratio = cfg.hoi_bg_ratio
         pos_per_batch = batch_size / (self.neg_pos_ratio + 1)
@@ -633,6 +664,7 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
         self.neg_per_batch = batch_size - self.pos_per_batch
         assert pos_per_batch == self.pos_per_batch
         assert self.neg_pos_ratio == int(self.neg_pos_ratio)
+        assert self.neg_samples.shape[0] >= self.neg_pos_ratio * self.pos_samples.shape[0]
 
         self.batches = self.get_all_batches()
 
@@ -647,7 +679,9 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
     def get_all_batches(self):
         batches = []
 
-        # Positive samples
+        ####################
+        # Positive samples #
+        ####################
         pos_samples = np.random.permutation(self.pos_samples) if self.shuffle else self.pos_samples
         batch = []
         for sample in pos_samples:
@@ -657,12 +691,17 @@ class BalancedTripletSampler(torch.utils.data.Sampler):
                 batches.append(batch)
                 batch = []
 
-        # Negative samples
+        ####################
+        # Negative samples #
+        ####################
+
+        # Repeat if there are not enough negative samples. Note: this case is actually not supported anymore.
         neg_samples = []
         for n in range(int(np.ceil(self.neg_pos_ratio * self.pos_samples.shape[0] / self.neg_samples.shape[0]))):
             ns = np.random.permutation(self.neg_samples) if self.shuffle else self.neg_samples
             neg_samples.append(ns)
         neg_samples = np.concatenate(neg_samples, axis=0)
+
         batch_idx = 0
         for sample in neg_samples:
             if batch_idx == len(batches):

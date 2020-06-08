@@ -187,12 +187,13 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
 
     min_ticks = y_ticks[1::2]
     ax.set_yticks(min_ticks, minor=True)
-    if alternate_labels:
+    alternate_labels_y = True if alternate_labels == 'y' or alternate_labels is True else False
+    if alternate_labels_y:
         min_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(y_inds, y_tick_labels)][1::2]
     else:
         min_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(y_inds, y_tick_labels)][1::2]
     ax.set_yticklabels(min_tick_labels, minor=True)
-    ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels, right=True, labelright=alternate_labels, labelsize=fsize)
+    ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels_y, right=True, labelright=alternate_labels_y, labelsize=fsize)
 
     x_tick_labels = [' '.join(l.replace('_', ' ').strip().split()) for l in xticklabels]
     x_ticks = np.arange(len(x_tick_labels))
@@ -206,13 +207,14 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
 
     min_ticks = x_ticks[1::2]
     ax.set_xticks(min_ticks, minor=True)
-    if alternate_labels:
+    alternate_labels_x = True if alternate_labels == 'x' or alternate_labels is True else False
+    if alternate_labels_x:
         min_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(x_inds, x_tick_labels)][1::2]
         ax.set_xticklabels(min_tick_labels, minor=True, rotation=45, ha='right', rotation_mode='anchor')
     else:
         min_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(x_inds, x_tick_labels)][1::2]
         ax.set_xticklabels(min_tick_labels, minor=True, rotation=45, ha='left', rotation_mode='anchor')
-    ax.tick_params(axis='x', which='minor', top=True, labeltop=not alternate_labels, bottom=True, labelbottom=alternate_labels, labelsize=fsize)
+    ax.tick_params(axis='x', which='minor', top=True, labeltop=not alternate_labels_x, bottom=True, labelbottom=alternate_labels_x, labelsize=fsize)
 
     if annotate:
         for i in range(mat.shape[0]):
