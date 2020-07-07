@@ -14,7 +14,7 @@ from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, AbstractModule, \
     PartStateBranch, FrozenPartStateBranch, \
     ActZSBranch, FromPartStateLogitsBranch, \
-    AttBranch, PartStateInReprBranch, LogicBranch
+    AttBranch, LogicBranch
 from lib.models.graphs import get_vcoco_graphs, get_cocoa_graphs
 
 
@@ -27,7 +27,7 @@ class AbstractTriBranchModel(AbstractModel):
         super().__init__(dataset, **kwargs)
         assert not (cfg.no_part and part_only)
         self.dataset = dataset
-        self.part_dataset = None if cfg.no_part else HicoDetHake()  # type: Union[None, HicoDetHake]
+        self.part_dataset = HicoDetHake()  # type: Union[None, HicoDetHake]
         self.zs_enabled = (cfg.seenf >= 0)
         self.part_only = part_only
         self.predict_act = True
@@ -43,14 +43,10 @@ class AbstractTriBranchModel(AbstractModel):
                 assert isinstance(self.dataset, CocoaSplit)
                 get_graphs = get_cocoa_graphs
 
-            if cfg.no_part:
-                oa_adj, _, _ = get_graphs(self.dataset, source_ds=HicoDetHake(), to_torch=True,
-                                          ext_interactions=not cfg.oracle, sym=True)
-            else:
-                oa_adj, aos_cooccs, num_ao_pairs = get_graphs(self.dataset, source_ds=self.part_dataset, to_torch=True,
-                                                              ext_interactions=not cfg.oracle, sym=True)
-                self.cache.aos_cooccs = aos_cooccs
-                self.cache.num_ao_pairs = num_ao_pairs
+            oa_adj, aos_cooccs, num_ao_pairs = get_graphs(self.dataset, source_ds=self.part_dataset, to_torch=True,
+                                                          ext_interactions=not cfg.oracle, sym=True)
+            self.cache.aos_cooccs = aos_cooccs
+            self.cache.num_ao_pairs = num_ao_pairs
             self.cache.oa_adj = oa_adj
 
         self.branches = nn.ModuleDict()
@@ -153,11 +149,8 @@ class ActModel(AbstractTriBranchModel):
         super().__init__(dataset, **kwargs)
 
     def _init_act_branch(self):
-        if cfg.no_part:
-            branch_class = ActZSBranch
-        else:
-            branch_class = PartStateInReprBranch
-        self.branches['act'] = branch_class(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        self.branches['act'] = ActZSBranch(use_pstates=not (cfg.no_part or cfg.no_psf),
+                                           dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
 
 
 class LogicActModel(ActModel):
@@ -166,10 +159,12 @@ class LogicActModel(ActModel):
         return 'logic'
 
     def __init__(self, dataset: HoiDatasetSplit, **kwargs):
+        assert not cfg.no_part
         super().__init__(dataset, **kwargs)
 
     def _init_act_branch(self):
-        self.branches['act'] = LogicBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+        self.branches['act'] = LogicBranch(use_pstates=not cfg.no_psf,
+                                           dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
 
 
 class FromPStateActModel(ActModel):
@@ -193,5 +188,6 @@ class AttActModel(ActModel):
         super().__init__(dataset, **kwargs)
 
     def _init_act_branch(self):
-        self.branches['act'] = AttBranch(part_repr_dim=self.branches['part'].repr_dims[1],
+        self.branches['act'] = AttBranch(use_pstates=not (cfg.no_part or cfg.no_psf),
+                                         part_repr_dim=self.branches['part'].repr_dims[1],
                                          dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)

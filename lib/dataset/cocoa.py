@@ -16,8 +16,8 @@ class CocoaSplit(HoiDatasetSplit):
         self.full_dataset = self.full_dataset  # type: Cocoa
 
     @classmethod
-    def instantiate_full_dataset(cls):
-        return Cocoa()
+    def instantiate_full_dataset(cls, **kwargs):
+        return Cocoa(**kwargs)
 
     def _init_feat_provider(self, **kwargs):
         return HoiInstancesFeatProvider(ds=self, ds_name='cocoa', obj_mapping=np.arange(self.full_dataset.num_objects), **kwargs)
@@ -37,7 +37,7 @@ class CocoaSplit(HoiDatasetSplit):
 
 
 class Cocoa(HoiDataset):
-    def __init__(self):
+    def __init__(self, all_as_test=False):
         driver = CocoaDriver()  # type: CocoaDriver
 
         object_classes = driver.objects
@@ -60,11 +60,14 @@ class Cocoa(HoiDataset):
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
 
-        self._split_gt_data = {'train': self.compute_img_data(img_ids=np.loadtxt(os.path.join(driver.data_dir, 'peyre', 'trainval.ids'), dtype=int),
-                                                              driver=driver),
-                               'test': self.compute_img_data(img_ids=np.loadtxt(os.path.join(driver.data_dir, 'peyre', 'test.ids'), dtype=int),
-                                                             driver=driver),
-                               }  # type: Dict[str, List[GTImgData]]
+        data_file_format = os.path.join(driver.data_dir, 'peyre', '%s.ids')
+        if all_as_test:
+            self._split_gt_data = {'test': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'all', dtype=int), driver=driver)
+                                   }  # type: Dict[str, List[GTImgData]]
+        else:
+            self._split_gt_data = {'train': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'trainval', dtype=int), driver=driver),
+                                   'test': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'test', dtype=int), driver=driver),
+                                   }  # type: Dict[str, List[GTImgData]]
         self._img_dir = os.path.join(driver.coco_dir, 'images')
 
     def get_img_data(self, split):

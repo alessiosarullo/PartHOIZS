@@ -441,8 +441,9 @@ class FrozenPartStateBranch(PartStateBranch):
 
 
 class ActZSBranch(AbstractBranch):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_pstates=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.use_pstates = use_pstates
         self.ld = self._get_label_data()
 
         self.input_vec_dim, self.input_vec_f = self._get_input_vec_func()
@@ -454,22 +455,35 @@ class ActZSBranch(AbstractBranch):
             self.unseen_inds = nn.Parameter(torch.tensor(self.ld.unseen_classes), requires_grad=False)
 
             self.unseen_loss_coeff = cfg.awsu
-            assert self.unseen_loss_coeff > 0  # using weak supervision for unseen actions/interactions
-            wembs = self.cache.word_embs.get_embeddings(self.ld.all_classes_str, retry='avg')
-            self.wemb_sim = nn.Parameter(torch.from_numpy(wembs @ wembs.T).clamp(min=0), requires_grad=False)
-            self.obj_act_feasibility = nn.Parameter(self.cache.oa_adj, requires_grad=False)
+            if self.unseen_loss_coeff > 0:  # using weak supervision for unseen actions/interactions
+                wembs = self.cache.word_embs.get_embeddings(self.ld.all_classes_str, retry='avg')
+                self.wemb_sim = nn.Parameter(torch.from_numpy(wembs @ wembs.T).clamp(min=0), requires_grad=False)
+                self.obj_act_feasibility = nn.Parameter(self.cache.oa_adj, requires_grad=False)
 
     def _get_input_vec_func(self):
         input_vec_dim = self.dims.F_img + self.dims.F_ex + 2 * self.dims.O
+        if self.use_pstates:
+            input_vec_dim = input_vec_dim + self.dims.S_sym
 
         def input_vec_f(x: Minibatch):
             img_feats = x.im_data[1]
             ex_feats = x.ex_data[1]
             obj_scores = x.obj_data[1].squeeze(dim=1)
             im_obj_scores = x.im_data[3]
-            return torch.cat([img_feats, ex_feats, obj_scores, im_obj_scores], dim=1)
+            input_vec = torch.cat([img_feats, ex_feats, obj_scores, im_obj_scores], dim=1)
+            if self.use_pstates:
+                symstate_logits = self._get_symstate_logits()  # N x S_sym
+                input_vec = torch.cat([input_vec, symstate_logits], dim=1)
+            return input_vec
 
         return input_vec_dim, input_vec_f
+
+    def _get_symstate_logits(self):
+        state_logits = self.cache['part_dir_logits']
+        symstate_logits = state_logits.new_zeros((state_logits.shape[0], self.part_dataset.num_symstates))
+        for i, js in enumerate(self.part_dataset.symstates_inds):
+            symstate_logits[:, i] = state_logits[:, js].max(dim=1)[0]  # OR -> max
+        return symstate_logits
 
     def _get_label_data(self) -> LabelData:
         label_trasf_mat = torch.from_numpy(self.dataset.full_dataset.interaction_to_action_mat)
@@ -496,9 +510,9 @@ class ActZSBranch(AbstractBranch):
                 seen_inds = seen_inds[1:]
             losses[f'act_loss_seen'] = bce_loss(logits[:, seen_inds], labels[:, seen_inds])
 
-            assert self.unseen_loss_coeff > 0
-            unseen_class_labels = self.get_unseen_labels(x.labels)
-            losses[f'act_loss_unseen'] = self.unseen_loss_coeff * bce_loss(logits[:, self.unseen_inds], unseen_class_labels)
+            if self.unseen_loss_coeff > 0:
+                unseen_class_labels = self.get_unseen_labels(x.labels)
+                losses[f'act_loss_unseen'] = self.unseen_loss_coeff * bce_loss(logits[:, self.unseen_inds], unseen_class_labels)
         else:  # no ZS
             if cfg.train_null_act:
                 losses[f'act_loss_seen'] = bce_loss(logits, labels)
@@ -532,32 +546,10 @@ class ActZSBranch(AbstractBranch):
         return unseen_class_labels.detach()
 
 
-class PartStateInReprBranch(ActZSBranch):
+class FromPartStateLogitsBranch(ActZSBranch):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def _get_input_vec_func(self):
-        input_vec_dim, _input_vec_f = super()._get_input_vec_func()
-        input_vec_dim = input_vec_dim + self.dims.S_sym
-
-        def input_vec_f(x: Minibatch):
-            input_vec = _input_vec_f(x)
-            symstate_logits = self._get_symstate_logits()  # N x S_sym
-            return torch.cat([input_vec, symstate_logits], dim=1)
-
-        return input_vec_dim, input_vec_f
-
-    def _get_symstate_logits(self):
-        state_logits = self.cache['part_dir_logits']
-        symstate_logits = state_logits.new_zeros((state_logits.shape[0], self.part_dataset.num_symstates))
-        for i, js in enumerate(self.part_dataset.symstates_inds):
-            symstate_logits[:, i] = state_logits[:, js].max(dim=1)[0]  # OR -> max
-        return symstate_logits
-
-
-class FromPartStateLogitsBranch(PartStateInReprBranch):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(use_pstates=True, *args, **kwargs)  # use_pstates here is actually irrelevant
+        self.input_vec_dim = self.input_vec_f = None  # these should not be used
         self._add_mlp(name='from_state', input_dim=self.dims.S_sym, output_dim=self.repr_dims[1], num_classes=self.ld.num_classes)
 
     def _forward(self, x: Minibatch):
@@ -570,7 +562,7 @@ class FromPartStateLogitsBranch(PartStateInReprBranch):
         return dir_logits, zs_logits
 
 
-class LogicBranch(PartStateInReprBranch):
+class LogicBranch(ActZSBranch):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._add_mlp(name='necessary', input_dim=self.input_vec_dim, output_dim=self.repr_dims[0], num_classes=self.ld.num_classes)
@@ -583,8 +575,7 @@ class LogicBranch(PartStateInReprBranch):
 
         nec_label_mat = cooccs / num.unsqueeze(dim=1).clamp(min=1).double()
         nec_label_mat_norm = (nec_label_mat > thr).float()
-        if True:
-            nec_label_mat_norm /= nec_label_mat_norm.sum(dim=1, keepdim=True)  # this is so all necessary conditions have to be met to give 1
+        nec_label_mat_norm /= nec_label_mat_norm.sum(dim=1, keepdim=True)  # this is so all necessary conditions have to be met to give 1
         self.nec_label_mat = nn.Parameter(nec_label_mat_norm, requires_grad=False)
 
         suf_label_mat = cooccs / cooccs.sum(dim=0, keepdim=True).clamp(min=1)
@@ -618,6 +609,7 @@ class LogicBranch(PartStateInReprBranch):
         w_suf_pos = cfg.awsls_pos
         assert w_suf_pos >= 1
         suf_labels = (symstate_labels @ self.suf_label_mat.t()).clamp(max=1)
+        # suf_labels = (symstate_labels.unsqueeze(dim=1) * self.suf_label_mat.unsqueeze(dim=0)).max(dim=2)[0].clamp(max=1)
         losses[f'act_loss_suf'] = w_suf * bce_loss(suf_logits[:, suf_mask], suf_labels[:, suf_mask], pos_weights=w_suf_pos)
 
         return losses
@@ -635,7 +627,7 @@ class LogicBranch(PartStateInReprBranch):
         return dir_logits, nec_logits, suf_logits
 
 
-class AttBranch(PartStateInReprBranch):
+class AttBranch(ActZSBranch):
     def __init__(self, part_repr_dim, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

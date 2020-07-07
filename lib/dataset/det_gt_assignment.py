@@ -107,7 +107,7 @@ class HumObjPairsModule:
         obj_labels = gt_label_of_predicted_boxes[ho_pairs[:, 1]].astype(np.float32, copy=False)
         neg_box_labels = (obj_labels < 0)
         assert np.all(action_labels[neg_box_labels, 0]) and not np.any(action_labels[neg_box_labels, 1:])  # obj=-1 => null action
-        obj_labels[neg_box_labels] = self.full_dataset.human_class  # FIXME non exactly correct
+        obj_labels[neg_box_labels] = self.full_dataset.human_class  # FIXME this is non correct... but it also only affects null actions
 
         if not self.full_dataset.labels_are_actions:  # convert back to interaction labels
             hoi_inds, acts = np.where(action_labels)

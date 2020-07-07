@@ -16,7 +16,7 @@ class VCocoSplit(HoiDatasetSplit):
         self.full_dataset = self.full_dataset  # type: VCoco
 
     @classmethod
-    def instantiate_full_dataset(cls):
+    def instantiate_full_dataset(cls, **kwargs):
         return VCoco()
 
     def _init_feat_provider(self, **kwargs):

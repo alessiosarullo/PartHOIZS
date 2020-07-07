@@ -121,7 +121,8 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}", textcolors=("black", "whit
 
 def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_labels=True,
              axes=None, vrange=None, cbar=True, bin_colours=None, grid=False, plot=True, title=None, log=False,
-             neg_color=None, zero_color=None, cmap='jet', figsize=(16, 9), annotate=False, fsize=8, fix_cbar_height=False):
+             neg_color=None, zero_color=None, cmap='jet', figsize=(16, 10), fsize=8, fix_cbar_height=False,
+             annotate=False, ann_fsize=None, perc=False):
     if axes is None:
         plt.figure(figsize=figsize)
         ax = plt.gca()
@@ -145,6 +146,11 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
         else:
             assert isinstance(bin_colours, int)
             num_colors = bin_colours
+
+    if perc:
+        mat[mat > 0] *= 100
+        vrange = (vrange[0] * 100, vrange[1] * 100)
+
     cmap = plt.get_cmap(cmap, lut=num_colors)
     if neg_color:
         cmap.set_under(np.array(neg_color))
@@ -165,22 +171,23 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
         mat_ax = ax.matshow(mat, cmap=cmap, vmin=vrange[0], vmax=vrange[1])
 
     if cbar:
-        if fix_cbar_height:  # FIXME remove this option
+        if fix_cbar_height:
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.5)
-            plt.colorbar(mat_ax, cax=cax)
+            cbar = plt.colorbar(mat_ax, cax=cax)
         else:
-            plt.colorbar(mat_ax, ax=ax,
+            cbar = plt.colorbar(mat_ax, ax=ax,
                          # fraction=0.04,
                          pad=0.06,
                          )
+    cbar.ax.tick_params(labelsize=(fsize * 6) // 7)
 
     y_tick_labels = [' '.join(l.replace('_', ' ').strip().split()) for l in yticklabels]
     y_ticks = np.arange(len(y_tick_labels))
     y_inds = y_inds if y_inds is not None else range(len(y_tick_labels))
 
     maj_ticks = y_ticks[::2]
-    maj_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(y_inds, y_tick_labels)][::2]
+    maj_tick_labels = [f'{lbl} {i}' for i, lbl in zip(y_inds, y_tick_labels)][::2]
     ax.set_yticks(maj_ticks)
     ax.set_yticklabels(maj_tick_labels)
     ax.tick_params(axis='y', which='major', left=True, labelleft=True, right=True, labelright=False, labelsize=fsize)
@@ -189,9 +196,9 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     ax.set_yticks(min_ticks, minor=True)
     alternate_labels_y = True if alternate_labels == 'y' or alternate_labels is True else False
     if alternate_labels_y:
-        min_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(y_inds, y_tick_labels)][1::2]
+        min_tick_labels = [f'{i} {lbl}' for i, lbl in zip(y_inds, y_tick_labels)][1::2]
     else:
-        min_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(y_inds, y_tick_labels)][1::2]
+        min_tick_labels = [f'{lbl} {i}' for i, lbl in zip(y_inds, y_tick_labels)][1::2]
     ax.set_yticklabels(min_tick_labels, minor=True)
     ax.tick_params(axis='y', which='minor', left=True, labelleft=not alternate_labels_y, right=True, labelright=alternate_labels_y, labelsize=fsize)
 
@@ -200,7 +207,7 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     x_inds = x_inds if x_inds is not None else range(len(x_tick_labels))
 
     maj_ticks = x_ticks[::2]
-    maj_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(x_inds, x_tick_labels)][::2]
+    maj_tick_labels = [f'{i} {lbl}' for i, lbl in zip(x_inds, x_tick_labels)][::2]
     ax.set_xticks(maj_ticks)
     ax.set_xticklabels(maj_tick_labels, rotation=45, ha='left', rotation_mode='anchor')
     ax.tick_params(axis='x', which='major', top=True, labeltop=True, bottom=True, labelbottom=False, labelsize=fsize)
@@ -209,19 +216,23 @@ def plot_mat(mat, xticklabels, yticklabels, x_inds=None, y_inds=None, alternate_
     ax.set_xticks(min_ticks, minor=True)
     alternate_labels_x = True if alternate_labels == 'x' or alternate_labels is True else False
     if alternate_labels_x:
-        min_tick_labels = ['%s %d' % (lbl, i) for i, lbl in zip(x_inds, x_tick_labels)][1::2]
+        min_tick_labels = [f'{lbl} {i}' for i, lbl in zip(x_inds, x_tick_labels)][1::2]
         ax.set_xticklabels(min_tick_labels, minor=True, rotation=45, ha='right', rotation_mode='anchor')
     else:
-        min_tick_labels = ['%d %s' % (i, lbl) for i, lbl in zip(x_inds, x_tick_labels)][1::2]
+        min_tick_labels = [f'{i} {lbl}' for i, lbl in zip(x_inds, x_tick_labels)][1::2]
         ax.set_xticklabels(min_tick_labels, minor=True, rotation=45, ha='left', rotation_mode='anchor')
     ax.tick_params(axis='x', which='minor', top=True, labeltop=not alternate_labels_x, bottom=True, labelbottom=alternate_labels_x, labelsize=fsize)
 
     if annotate:
+        if ann_fsize is None:
+            ann_fsize = fsize
         for i in range(mat.shape[0]):
             for j in range(mat.shape[1]):
                 value = mat[i, j]
                 if value != zero_value and value >= 0:
-                    text = ax.text(j, i, f'{value:.2f}', ha='center', va='center', color='k', fontsize=fsize)
+                    ann_str = f'{value:.0f}' if perc else f'{value:.2f}'
+                    text = ax.text(j, i, ann_str, ha='center', va='center', fontsize=ann_fsize,
+                                   color='k' if value >= 0.3 * (vrange[1] - vrange[0]) else 'w')
                     # text.set_path_effects([path_effects.Stroke(linewidth=2, foreground='k'), path_effects.Normal()])
 
     if title is not None:

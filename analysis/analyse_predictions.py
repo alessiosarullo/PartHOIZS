@@ -134,17 +134,15 @@ def act_model():
         # 'output/act/vcoco_nozs/pbf/2020-05-01_10-53-43_SINGLE',
         # 'output/logic/vcoco_nozs/pbf/2020-05-01_11-05-44_SINGLE',
 
-        'output/act/vcoco_zs1_nopart/awsu1/2020-05-21_15-44-35_SINGLE',
-        # 'output/act/vcoco_zs1/pbf_awsu1_oracle/2020-04-15_16-52-04_SINGLE',
-        'output/act/vcoco_zs1_pbf/awsu1/2020-05-22_12-42-24_SINGLE',
+        'output/vcoco/act/zs1_nopart/noawsu/2020-06-10_16-55-00_SINGLE',
+        'output/vcoco/act/zs1_pbf/noawsu/2020-06-10_16-38-37_SINGLE',
+        'output/vcoco/logic/zs1_pbf/noawsu/2020-06-10_16-10-25_SINGLE',
 
-        # 'output/att/vcoco_zs1_pbf/attsp1_awsu1/2020-05-22_16-57-37_SINGLE',
+        # 'output/vcoco/act/zs1_nopart/awsu1/2020-06-03_16-47-26_SINGLE',
+        # 'output/vcoco/act/zs1_pbf/awsu1/2020-06-03_15-50-53_SINGLE',
+        # 'output/vcoco/logic/zs1_pbf/awsu1_nopsf/2020-06-11_16-12-15_SINGLE',
+        'output/vcoco/logic/zs1_pbf/awsu1/2020-06-03_16-00-59_SINGLE',
 
-        # 'output/late/vcoco_zs1_pbf/awsu1/2020-05-21_16-06-27_SINGLE',
-
-        # 'output/lateatt/vcoco_zs1/pbf_awsu1/2020-05-14_13-15-06_SINGLE',
-
-        'output/logic/vcoco_zs1/pbf_awsu1/2020-05-14_13-44-37_SINGLE',
     ]
     to_plot = []
     measure_labels = []
@@ -235,7 +233,7 @@ def act_model():
     to_plot_ext = to_plot
     measure_labels = measure_labels[:-1]
 
-    y_labels = ['', 'Average']
+    y_labels = ['', 'Average all']
     to_plot_ext = np.concatenate([to_plot_ext,
                                   -np.ones((1, to_plot_ext.shape[1])),
                                   to_plot_ext.mean(axis=0, keepdims=True)
@@ -253,16 +251,64 @@ def act_model():
         y_labels += ['Average unseen']
     y_labels = act_labels + y_labels
 
-    plot_mat(to_plot_ext,
-             xticklabels=measure_labels,
-             yticklabels=y_labels,
-             neg_color=[1, 0, 1],
-             zero_color=[1, 1, 1],
-             alternate_labels=alternate_labels,
-             vrange=(0, 1),
-             annotate=max(to_plot_ext.shape) <= 60,
-             figsize=(22, 12),
-             )
+    print('\n'.join([f'{all*100:.2f} & {unseen*100:.2f}' for all, unseen in to_plot_ext[-2:, :].T if all >= 0 or unseen >= 0]))
+    if True:  # plot to report:
+        keep_along_x = np.flatnonzero(np.any(to_plot_ext > 0, axis=0))
+        keep_along_y = np.flatnonzero(np.any(to_plot_ext > 0, axis=1))
+        to_plot_ext = to_plot_ext[keep_along_y, :]
+        to_plot_ext = to_plot_ext[:, keep_along_x]
+        to_plot_ext = to_plot_ext.T
+        act_labels = [y_labels[i] for i in keep_along_y]
+
+        # Remove average
+        act_labels = act_labels[:-2]
+        to_plot_ext = to_plot_ext[:, :-2]
+
+        exp_labels = []
+        for i, e in enumerate(exps):
+            s = 'Base'
+            if 'pbf' in e:
+                if 'nopsf' not in e:
+                    s += '+P'
+            else:
+                assert 'nopart' in e
+            if 'noawsu' not in e:
+                assert 'awsu' in e
+                s += '+A'
+            if 'logic' in e:
+                s += '+L'
+            exp_labels.append(s)
+
+        plot_mat(to_plot_ext,
+                 xticklabels=act_labels,
+                 yticklabels=exp_labels,
+                 x_inds=[''] * len(act_labels),
+                 y_inds=[''] * len(measure_labels),
+                 alternate_labels=False,
+                 vrange=(0, 1),
+                 fix_cbar_height=True,
+                 figsize=(22, 8),
+                 fsize=28,
+                 annotate=True,
+                 ann_fsize=28,
+                 perc=True,
+                 plot=False
+                 )
+        filename = '_vs_'.join([e.lower().replace('base', '').strip('+_').replace('+', '-') for e in exp_labels])
+        plt.savefig(f'/home/alex/Dropbox/PhD Docs/My stuff/Thesis/images/{filename}.png',
+                    dpi=400, bbox_inches='tight', pad_inches=0, format='png')
+        # plt.show()
+    else:
+        plot_mat(to_plot_ext,
+                 xticklabels=measure_labels,
+                 yticklabels=y_labels,
+                 neg_color=[1, 0, 1],
+                 zero_color=[1, 1, 1],
+                 alternate_labels=alternate_labels,
+                 vrange=(0, 1),
+                 annotate=max(to_plot_ext.shape) <= 60,
+                 figsize=(22, 12),
+                 )
     print('Done.')
 
 

@@ -7,6 +7,7 @@ import numpy as np
 
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.det_gt_assignment import HumObjPairsModule
+from  lib.dataset.utils import COCO_CLASSES
 
 DATASETS = ['hico', 'vcoco', 'cocoa']
 
@@ -60,6 +61,8 @@ def main():
         raise ValueError(f'Dataset should be one of {DATASETS}.')
     DsSplit = DsSplit  # type: Type[HoiDatasetSplit]
     full_dataset = DsSplit.instantiate_full_dataset()
+    coco_human_class = COCO_CLASSES.index('person')
+    coco_bg_class = COCO_CLASSES.index('__background__')
 
     pair_mod = HumObjPairsModule(dataset=full_dataset, gt_iou_thr=args.gt_iou_thr, hoi_bg_ratio=args.hoi_bg_ratio, null_as_bg=True)
     for split in ['train', 'test']:
@@ -97,7 +100,7 @@ def main():
             # # Filter out BG/person objects
             # if obj_inds_i is not None:
             #     obj_classes_i = np.argmax(obj_scores[obj_inds_i, :], axis=1)
-            #     keep = (obj_classes_i >= 2)  # 0 and 1 are COCO's background and person class, respectively
+            #     keep = (obj_classes_i >= 2)  # 0 and 1 are COCO's background and person class, respectively IN DETECTRON! NOT DETECTRON 2
             #     obj_inds_i = obj_inds_i[keep]
             #     if obj_inds_i.size == 0:
             #         obj_inds_i = None
@@ -111,12 +114,18 @@ def main():
                                              np.zeros(obj_boxes_i.shape[0], dtype=bool)])
                 boxes_inds_i = np.concatenate([hum_inds_i, obj_inds_i])
 
+                # box_classes_i = np.full(is_human_i.shape[0], fill_value=-1)
+                # box_classes_i[is_human_i] = coco_human_class
+                # box_classes_i[~is_human_i] = np.argmax(obj_scores[obj_inds_i, :], axis=1)
+                # assert np.all(box_classes_i != coco_bg_class)  # no bg
+
                 if split == 'test':
                     ho_pairs = get_all_pairs(is_human_i)
                     if ho_pairs.shape[0] == 0:
                         ho_pairs = None
                     labels = obj_labels = pstate_labels = None
                 else:
+                    # Object labels are according to the target dataset, not COCO
                     ho_pairs, labels, obj_labels, pstate_labels = pair_mod.compute_pairs(gt_img_data=im_data,
                                                                                          boxes=boxes_i,
                                                                                          is_human=is_human_i)

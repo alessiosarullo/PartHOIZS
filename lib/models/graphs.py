@@ -608,6 +608,20 @@ def main():
         use_interactions = False
 
         if not use_interactions:
+            nec = as_r_act > thr
+            suf = as_c > thr
+
+            print('#' * 100)
+            states = hh.symstates if sym else hh.states
+            for zsi in np.setdiff1d(np.arange(vcoco.num_actions), ainds):
+                pstates_with_cond = {}
+                for n in np.flatnonzero(nec[zsi, :]):
+                    pstates_with_cond.setdefault(n, []).append('N')
+                for s in np.flatnonzero(suf[zsi, :]):
+                    pstates_with_cond.setdefault(s, []).append('S')
+                print(f'{vcoco.actions[zsi]:25s}:', ', '.join([f'{states[k]} ({"".join(pstates_with_cond[k])})'
+                                                               for k in sorted(pstates_with_cond.keys())]))
+
             # Rows normalised by the total number of actions, so element (i, j) is the percentage of time action i co-occurs with state j.
             plot_mat(as_r_act,
                      xticklabels=hh.symstates if sym else hh.states,
@@ -631,7 +645,7 @@ def main():
                      plot=False
                      )
 
-            plot_mat((as_r_act > thr).astype(np.float) / 3 + (as_c > thr).astype(np.float) / 3 * 2,
+            plot_mat(nec.astype(np.float) / 3 + suf.astype(np.float) / 3 * 2,
                      xticklabels=hh.symstates if sym else hh.states,
                      yticklabels=vcoco.actions,
                      zero_color=[1, 1, 1],
@@ -651,7 +665,10 @@ def main():
 
             s_i_norm_over_s = (i_s_cooccs / np.maximum(1, num_inters[:, None])).T
             s_i_norm_over_ao = (i_s_cooccs / np.maximum(1, i_s_cooccs.sum(axis=0, keepdims=True))).T
-            plot_mat(s_i_norm_over_s,
+            nec = s_i_norm_over_s
+            suf = s_i_norm_over_ao
+
+            plot_mat(nec,
                      xticklabels=interaction_str,
                      yticklabels=hh.symstates if sym else hh.states,
                      zero_color=[1, 1, 1],
@@ -662,7 +679,7 @@ def main():
                      plot=False
                      )
 
-            plot_mat(s_i_norm_over_ao,
+            plot_mat(suf,
                      xticklabels=interaction_str,
                      yticklabels=hh.symstates if sym else hh.states,
                      zero_color=[1, 1, 1],

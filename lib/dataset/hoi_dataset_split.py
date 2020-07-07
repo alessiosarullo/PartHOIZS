@@ -128,7 +128,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         self._feat_provider.hold_out(ratio)
 
     @classmethod
-    def instantiate_full_dataset(cls) -> HoiDataset:
+    def instantiate_full_dataset(cls, **kwargs) -> HoiDataset:
         raise NotImplementedError
 
     @classmethod
@@ -148,6 +148,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
 class FeatProvider(torch.utils.data.Dataset):
     def __init__(self, ds: HoiDatasetSplit, ds_name,
                  obj_mapping=None, filter_objs=True,
+                 label_mapping=None,
                  max_ppl=None, max_obj=None):
         super().__init__()
         self.wrapped_ds = ds
@@ -229,6 +230,7 @@ class FeatProvider(torch.utils.data.Dataset):
         # Labels
         #############################################################################################################################
         self.labels = self.non_empty_inds = None  # these will be initialised later
+        self.label_mapping = label_mapping
 
     def _filter_zs_labels(self, labels):
         if self.full_dataset.labels_are_actions:
@@ -413,6 +415,12 @@ class HoiInstancesFeatProvider(FeatProvider):
 
         if self.split != 'test':
             _labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            if self.label_mapping is not None:
+                assert self.label_mapping.size == _labels.shape[1]
+                num_all = self.full_dataset.num_actions if self.full_dataset.labels_are_actions else self.full_dataset.num_interactions
+                _mapped_labels = np.zeros((_labels.shape[0], num_all))
+                _mapped_labels[:, self.label_mapping] = _labels
+                _labels = _mapped_labels
             assert self.ho_infos.shape[0] == _labels.shape[0]
             if self.full_dataset.labels_are_actions:
                 self.hoi_obj_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
@@ -573,7 +581,7 @@ class HoiInstancesFeatProvider(FeatProvider):
         obj_boxes[is_obj_human] = self.person_boxes[hum_obj_inds]
         _hum_obj_scores = self.person_scores[hum_obj_inds]
         obj_scores[is_obj_human, :] = (1 - _hum_obj_scores[:, None]) / (O - 1)  # equally distributed among all the other classes
-        obj_scores[is_obj_human, self.wrapped_ds.full_dataset.human_class] = _hum_obj_scores
+        obj_scores[is_obj_human, self.full_dataset.human_class] = _hum_obj_scores
         obj_feats[is_obj_human] = self.person_feats[hum_object_mask, ...][hobj_inv_index, ...]
         # Object is not human
         obj_boxes[~is_obj_human] = self.obj_boxes[obj_obj_inds]

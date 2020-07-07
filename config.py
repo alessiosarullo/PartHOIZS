@@ -73,6 +73,7 @@ class Configs:
         self.act = False
         self.train_null_act = False
         self.obj = False  # add object branch
+        self.no_psf = False
 
         # Loss
         self.fl_gamma = 0.0  # gamma in focal loss
