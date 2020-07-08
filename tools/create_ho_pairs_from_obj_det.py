@@ -9,12 +9,13 @@ from lib.dataset.hoi_dataset_split import HoiDatasetSplit
 from lib.dataset.det_gt_assignment import HumObjPairsModule
 from  lib.dataset.utils import COCO_CLASSES
 
-DATASETS = ['hico', 'vcoco', 'cocoa']
+DATASETS = ['hico', 'vcoco', 'cocoa', 'cocoaall']
 
 
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ds', type=str, choices=DATASETS)
+    parser.add_argument('--split', type=str, choices=['train', 'test', 'all'], default='all')
     parser.add_argument('--od_file', default=None)  # without the split and .h5 extension
     parser.add_argument('--kp_file', default=None)
     parser.add_argument('--debug', default=False, action='store_true')
@@ -55,7 +56,7 @@ def main():
         from lib.dataset.hicodet_hake import HicoDetHakeSplit as DsSplit
     elif args.ds == 'vcoco':
         from lib.dataset.vcoco import VCocoSplit as DsSplit
-    elif args.ds == 'cocoa':
+    elif args.ds == 'cocoa' or args.ds == 'cocoaall':
         from lib.dataset.cocoa import CocoaSplit as DsSplit
     else:
         raise ValueError(f'Dataset should be one of {DATASETS}.')
@@ -64,8 +65,10 @@ def main():
     coco_human_class = COCO_CLASSES.index('person')
     coco_bg_class = COCO_CLASSES.index('__background__')
 
+    splits = ['train', 'test'] if args.split == 'all' else [args.split]
+
     pair_mod = HumObjPairsModule(dataset=full_dataset, gt_iou_thr=args.gt_iou_thr, hoi_bg_ratio=args.hoi_bg_ratio, null_as_bg=True)
-    for split in ['train', 'test']:
+    for split in splits:
         hds = DsSplit(split=split, full_dataset=full_dataset)  # type: HoiDatasetSplit
 
         od_file = h5py.File(f'{od_file_basename}_{split}.h5', 'r')

@@ -15,8 +15,7 @@ def main():
     f_tr = h5py.File(fn + '_train.h5', 'r')
     f_te = h5py.File(fn + '_test.h5', 'r')
     assert not (set(f_te.keys()) - set(f_tr.keys()))
-    assert all(['label' in x for x in set(f_tr.keys()) - set(f_te.keys())])
-    # ['boxes', 'fname_ids', 'keypoints', 'kp_boxes', 'kp_feats', 'person_feats', 'scores']
+    assert set(f_tr.keys()) == set(f_te.keys())  # note: don't use it for HO pairs! Indices won't work anymore
 
     new_fn = fn.replace('cocoa', 'cocoaall') + '_test.h5'
     assert not os.path.exists(new_fn)

@@ -38,7 +38,6 @@ class CocoaSplit(HoiDatasetSplit):
 
 class Cocoa(HoiDataset):
     def __init__(self, all_as_test=False):
-        all_as_test = True  # FIXME!!!!!!!!!!!!!!!!!!!!!!!!!! remove
         driver = CocoaDriver()  # type: CocoaDriver
 
         object_classes = driver.objects

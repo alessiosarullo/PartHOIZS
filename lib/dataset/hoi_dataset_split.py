@@ -246,9 +246,8 @@ class FeatProvider(torch.utils.data.Dataset):
             seen, num_all = self.wrapped_ds.seen_interactions, self.full_dataset.num_interactions
         assert labels.shape[1] == num_all
         if seen.size < num_all:
-            all_labels = labels
-            labels = np.zeros_like(all_labels)
-            labels[:, seen] = all_labels[:, seen]
+            unseen = np.setdiff1d(np.arange(num_all), seen)
+            labels[:, unseen] = 0
         return labels
 
     def _compute_img_data(self, filter_bg_and_human_objs, max_ppl, max_obj):
@@ -421,13 +420,13 @@ class HoiInstancesFeatProvider(FeatProvider):
         self.ho_infos = ho_infos[valid_hois]  # see above for format
 
         if self.split != 'test':
-            _labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            tmp_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            _labels = tmp_labels
             if self.label_mapping is not None:
-                assert self.label_mapping.size == _labels.shape[1]
+                assert self.label_mapping.size == tmp_labels.shape[1]
                 num_all = self.full_dataset.num_actions if self.full_dataset.labels_are_actions else self.full_dataset.num_interactions
-                _mapped_labels = np.zeros((_labels.shape[0], num_all))
-                _mapped_labels[:, self.label_mapping] = _labels
-                _labels = _mapped_labels
+                _labels = np.zeros((tmp_labels.shape[0], num_all))
+                _labels[:, self.label_mapping] = tmp_labels
             assert self.ho_infos.shape[0] == _labels.shape[0]
             if self.full_dataset.labels_are_actions:
                 self.hoi_obj_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
@@ -460,8 +459,12 @@ class HoiInstancesFeatProvider(FeatProvider):
             negatives = (labels[:, 0] > 0)
         else:
             null_interactions = (self.full_dataset.interactions[:, 0] == 0)
-            positives = np.any(labels[:, ~null_interactions] > 0, axis=1)
-            negatives = np.any(labels[:, null_interactions] > 0, axis=1)
+            # positives = np.any(labels[:, ~null_interactions], axis=1)
+            # negatives = np.any(labels[:, null_interactions], axis=1)
+
+            # Done like this to save memory
+            negatives = np.array([row[null_interactions].any() for row in labels])
+            positives = ~negatives
         return positives, negatives
 
     def __len__(self):
