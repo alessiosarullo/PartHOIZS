@@ -15,6 +15,7 @@ from lib.dataset.hoi_dataset_split import HoiDatasetSplit, Minibatch
 from lib.dataset.hicodet_hake import HicoDetHakeSplit
 from lib.dataset.vcoco import VCocoSplit
 from lib.dataset.cocoa import CocoaSplit
+from lib.dataset.hico_cocoa import HicoCocoaSplit
 from lib.eval.evaluator_hicodethake_pstate import EvaluatorHicoDetHakePartROI
 from lib.eval.evaluator_vcoco_roi import EvaluatorVCocoROI
 from lib.eval.evaluator_hoi_roi import EvaluatorHoiRoi
@@ -113,8 +114,7 @@ class Launcher:
                     inds[k] = sorted(inds_dict['train'][k].tolist())
                 except KeyError:
                     pass
-        if inds['hoi'] is not None:
-            raise NotImplementedError('Unseen interactions are currently not supported.')
+        assert inds['hoi'] is None or (inds['obj'] is None and inds['act'] is None)
 
         if cfg.ds == 'hico' or cfg.ds == 'hh' or cfg.ds == 'hicodet':  # legacy support
             ds_class = HicoDetHakeSplit
@@ -122,9 +122,12 @@ class Launcher:
             ds_class = VCocoSplit
         elif cfg.ds == 'cocoa':
             ds_class = CocoaSplit
+        elif cfg.ds == 'hc':
+            ds_class = HicoCocoaSplit
         else:
             raise ValueError('Unknown dataset.')
-        splits = ds_class.get_splits(object_inds=inds['obj'], action_inds=inds['act'], val_ratio=cfg.val_ratio, use_precomputed_data=True)
+        splits = ds_class.get_splits(object_inds=inds['obj'], action_inds=inds['act'], interaction_inds=inds['hoi'],
+                                     val_ratio=cfg.val_ratio, load_precomputed_data=True)
         self.train_split, self.test_split = splits['train'], splits['test']
 
         # Model

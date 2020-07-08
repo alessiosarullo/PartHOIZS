@@ -9,13 +9,14 @@ from lib.dataset.cocoa import CocoaSplit
 from lib.dataset.hicodet_hake import HicoDetHake
 from lib.dataset.hoi_dataset_split import Minibatch, HoiDatasetSplit
 from lib.dataset.vcoco import VCocoSplit
+from lib.dataset.hico_cocoa import HicoCocoaSplit
 from lib.dataset.word_embeddings import WordEmbeddings
 from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, AbstractModule, \
     PartStateBranch, FrozenPartStateBranch, \
     ActZSBranch, FromPartStateLogitsBranch, \
     AttBranch, LogicBranch
-from lib.models.graphs import get_vcoco_graphs, get_cocoa_graphs
+from lib.models.graphs import get_vcoco_graphs, get_cocoa_graphs, get_hicococoa_graphs
 
 
 class AbstractTriBranchModel(AbstractModel):
@@ -47,6 +48,10 @@ class AbstractTriBranchModel(AbstractModel):
                                                           ext_interactions=not cfg.oracle, sym=True)
             self.cache.aos_cooccs = aos_cooccs
             self.cache.num_ao_pairs = num_ao_pairs
+            self.cache.oa_adj = oa_adj
+        elif isinstance(self.dataset, HicoCocoaSplit):
+            assert cfg.no_part
+            oa_adj, _, _ = get_hicococoa_graphs(hc_split=self.dataset, to_torch=True, mined_interactions=not cfg.oracle)
             self.cache.oa_adj = oa_adj
 
         self.branches = nn.ModuleDict()

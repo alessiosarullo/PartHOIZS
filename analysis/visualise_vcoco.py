@@ -71,7 +71,7 @@ def vis_vcoco():
     os.makedirs(save_dir, exist_ok=True)
 
     ds = VCoco()
-    dssplit = VCocoSplit(split=split, full_dataset=ds, use_precomputed_data=True)
+    dssplit = VCocoSplit(split=split, full_dataset=ds, load_precomputed_data=True)
 
     objects_str = ds.objects
     actions_str = ds.actions

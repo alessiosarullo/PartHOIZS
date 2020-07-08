@@ -8,7 +8,6 @@ from PIL import Image
 
 from config import cfg
 from lib.dataset.hoi_dataset import HoiDataset, GTImgData
-from lib.dataset.tin_utils import get_next_sp_with_pose
 from lib.dataset.utils import Dims, PrecomputedFilesHandler, COCO_CLASSES, filter_on_score
 from lib.timer import Timer
 
@@ -56,8 +55,10 @@ class AbstractHoiDatasetSplit:
 
 
 class HoiDatasetSplit(AbstractHoiDatasetSplit):
-    def __init__(self, split, full_dataset: HoiDataset, object_inds=None, action_inds=None, use_precomputed_data=False, **kwargs):
+    def __init__(self, split, full_dataset: HoiDataset, object_inds=None, action_inds=None, interaction_inds=None,
+                 load_precomputed_data=False, **kwargs):
         super().__init__(split)
+        assert interaction_inds is None or (object_inds is None and action_inds is None)
         self.full_dataset = full_dataset  # type: HoiDataset
         self.all_gt_img_data = self.full_dataset.get_img_data(self.split)
 
@@ -69,8 +70,12 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         self.actions = [full_dataset.actions[i] for i in action_inds]
         self.seen_actions = np.array(action_inds, dtype=np.int)
 
-        seen_op_mat = self.full_dataset.oa_to_interaction[self.seen_objects, :][:, self.seen_actions]
-        seen_interactions = set(np.unique(seen_op_mat).tolist()) - {-1}
+        if interaction_inds is None:
+            seen_op_mat = self.full_dataset.oa_to_interaction[self.seen_objects, :][:, self.seen_actions]
+            seen_interactions = set(np.unique(seen_op_mat).tolist()) - {-1}
+        else:
+            assert isinstance(interaction_inds, list)
+            seen_interactions = set(interaction_inds)
         self.seen_interactions = np.array(sorted(seen_interactions), dtype=np.int)
         self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
 
@@ -82,7 +87,7 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
             if object_inds is not None or action_inds is not None:
                 print(f'Train interactions ({self.seen_interactions.size}):', self.seen_interactions.tolist())
 
-        if use_precomputed_data:
+        if load_precomputed_data:
             self._feat_provider = self._init_feat_provider(**kwargs)  # type: FeatProvider
 
     def _init_feat_provider(self, **kwargs):
@@ -132,11 +137,13 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
         raise NotImplementedError
 
     @classmethod
-    def get_splits(cls, object_inds=None, action_inds=None, val_ratio=0, **kwargs):
+    def get_splits(cls, object_inds=None, action_inds=None, interaction_inds=None, val_ratio=0, **kwargs):
         splits = {}
         full_dataset = cls.instantiate_full_dataset()
 
-        train_split = cls(split='train', full_dataset=full_dataset, object_inds=object_inds, action_inds=action_inds, **kwargs)
+        train_split = cls(split='train', full_dataset=full_dataset,
+                          object_inds=object_inds, action_inds=action_inds, interaction_inds=interaction_inds,
+                          **kwargs)
         if val_ratio > 0:
             train_split.hold_out(ratio=val_ratio)
         splits['train'] = train_split
@@ -636,6 +643,7 @@ class HoiInstancesFeatProvider(FeatProvider):
                        obj_data=[t_obj_boxes, t_obj_scores, t_obj_feats],
                        labels=all_labels)
         if cfg.tin:
+            from lib.dataset.tin_utils import get_next_sp_with_pose
             interactiveness_patterns = np.zeros((N, P, M, D, D, 3 + B), dtype=np.float32)
             for i in range(N):
                 pattern = get_next_sp_with_pose(human_boxes=ppl_boxes[i, 0],

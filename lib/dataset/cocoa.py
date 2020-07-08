@@ -38,6 +38,7 @@ class CocoaSplit(HoiDatasetSplit):
 
 class Cocoa(HoiDataset):
     def __init__(self, all_as_test=False):
+        all_as_test = True  # FIXME!!!!!!!!!!!!!!!!!!!!!!!!!! remove
         driver = CocoaDriver()  # type: CocoaDriver
 
         object_classes = driver.objects
@@ -53,6 +54,8 @@ class Cocoa(HoiDataset):
                 if obj_id < 0:
                     continue
                 for a in im_ann['actions']:
+                    if action_classes[a].endswith('_solo'):
+                        continue
                     interactions.add((a, driver.object_annotations[obj_id]['obj']))
         for j in range(len(object_classes)):
             interactions.add((0, j))  # make sure it is possible NOT to interact with any object
@@ -62,7 +65,8 @@ class Cocoa(HoiDataset):
 
         data_file_format = os.path.join(driver.data_dir, 'peyre', '%s.ids')
         if all_as_test:
-            self._split_gt_data = {'test': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'all', dtype=int), driver=driver)
+            self._split_gt_data = {'train': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'trainval', dtype=int), driver=driver),
+                                   'test': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'all', dtype=int), driver=driver)
                                    }  # type: Dict[str, List[GTImgData]]
         else:
             self._split_gt_data = {'train': self.compute_img_data(img_ids=np.loadtxt(data_file_format % 'trainval', dtype=int), driver=driver),

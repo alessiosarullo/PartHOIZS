@@ -273,7 +273,11 @@ class Configs:
         if self.lr == 0:
             self.lr = self._def_lr_sgd if self.sgd else self._def_lr_adam
 
-        self._eval_only = os.path.exists(self.best_model_file) and not self.resume
+        try:
+            self._eval_only = os.path.exists(self.best_model_file) and not self.resume
+        except:
+            if fail_if_missing:
+                raise
 
     def save(self, file_path=None):
         file_path = file_path or self.config_file

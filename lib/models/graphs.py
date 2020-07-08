@@ -1,245 +1,16 @@
-import json
-import os
 import pickle
-from typing import List
 
 import numpy as np
 import torch
-from nltk.corpus import wordnet as wn
 
-from config import cfg
+from lib.dataset.cocoa import Cocoa, CocoaSplit
+from lib.dataset.hico_cocoa import HicoCocoa, HicoCocoaSplit
 from lib.dataset.hicodet_hake import HicoDetHake
 from lib.dataset.hoi_dataset import HoiDataset
 from lib.dataset.utils import get_obj_mapping
 from lib.dataset.vcoco import VCocoSplit, VCoco
-from lib.dataset.cocoa import CocoaSplit, Cocoa
 from lib.dataset.word_embeddings import WordEmbeddings
-
-
-class ExtSource:
-    def __init__(self):
-        triplets_str = self._load()
-
-        self.objects = sorted({t[i] for t in triplets_str for i in [0, 2]})
-        self.object_index = {x: i for i, x in enumerate(self.objects)}
-        self.predicates = sorted({t[1] for t in triplets_str})
-        self.predicate_index = {x: i for i, x in enumerate(self.predicates)}
-
-        self.triplets = np.array([[self.object_index[s], self.predicate_index[p], self.object_index[o]] for s, p, o in triplets_str])
-
-    @property
-    def human_classes(self) -> List[int]:
-        HUMAN_CLASSES = {'person', 'man', 'woman', 'boy', 'girl', 'child', 'kid', 'baby', 'guy',  # Common
-                         'audience', 'classroom', 'couple', 'crowd',  # Plural
-                         # Sport
-                         'catcher', 'player', 'rider', 'skateboarder', 'skater', 'skier', 'snowboarder', 'surfer', 'tennis player',
-                         # Others
-                         'friend', 'guard', 'small child', 'little girl', 'cowboy', 'carrier', 'driver', }
-        return [self.object_index[o] for o in sorted(HUMAN_CLASSES) if o in self.object_index.keys()]
-
-    @property
-    def triplet_str(self):
-        return [(self.objects[s], self.predicates[p], self.objects[o]) for s, p, o in self.triplets]
-
-    def _load(self):
-        raise NotImplementedError
-
-    def get_interactions_for(self, hoi_ds: HoiDataset):
-        # '_' -> ' '
-        if isinstance(hoi_ds, VCoco):
-            hoi_ds_action_index = {}
-            for k, v in hoi_ds.action_index.items():
-                if k == 'hit_instr':
-                    new_k = 'hit_with'
-                elif k == 'cut_instr':
-                    new_k = 'cut_with'
-                elif k == 'eat_instr':
-                    new_k = 'eat_with'
-                elif k == 'lay_instr':
-                    new_k = 'lay_on'
-                elif k == 'work_on_computer_instr':
-                    new_k = 'type_on'
-                else:
-                    new_k = k.rsplit('_', 1)[0]
-                new_k = new_k.replace('_', ' ')
-                hoi_ds_action_index[new_k] = v
-        else:
-            hoi_ds_action_index = {k.replace('_', ' '): v for k, v in hoi_ds.action_index.items()}
-        hoi_ds_objects = [o.replace('_', ' ') for o in hoi_ds.objects]
-        hoi_ds_object_index = {k.replace('_', ' '): v for k, v in hoi_ds.object_index.items()}
-
-        # Subject mapping
-        humans = set(self.human_classes)
-        subj_mapping = np.full(len(self.objects), fill_value=-1, dtype=np.int)
-        for s in humans:
-            assert subj_mapping[s] == -1
-            for t in [self.objects[s], 'person', 'human']:  # try specific one, then 'person', then 'human'
-                if t in hoi_ds_object_index:
-                    subj_mapping[s] = hoi_ds_object_index[t]
-                    break
-
-        # Predicate to action mapping
-        pred_mapping = np.full(len(self.predicates), fill_value=-1, dtype=np.int)
-        for i, pred in enumerate(self.predicates):
-            pred_split = pred.split()
-
-            if pred_split[0].startswith('text'):  # old WordNet doesn't have this
-                verb_base_forms = ['text']
-            else:
-                # Using protected method to get all results instead of just the first one.
-                verb_base_forms = wn._morphy(pred_split[0], wn.VERB, check_exceptions=True)
-            if len(verb_base_forms) > 0:  # not a preposition
-                for vbf in verb_base_forms:
-                    verb_phrase_base_form = ' '.join([vbf] + pred_split[1:])
-                    if verb_phrase_base_form in hoi_ds_action_index.keys():
-                        pred_mapping[i] = hoi_ds_action_index[verb_phrase_base_form]
-                        break
-                else:
-                    if 'drink' in verb_base_forms and len(pred_split) == 2 and pred_split[1] == 'from':  # drink_from -> drink_with
-                        pred_mapping[i] = hoi_ds_action_index.get('drink with', -1)
-
-        # Object mapping
-        fixes = {"ski's": 'skis',
-                 'hairdryer': 'hair dryer',
-                 'cellphone': 'cell phone'}
-        obj_mapping = np.full(len(self.objects), fill_value=-1, dtype=np.int)
-        for i, obj in enumerate(self.objects):
-            obj = fixes.get(obj, obj)
-            try:
-                obj_mapping[i] = hoi_ds_object_index[obj]
-            except KeyError:
-                try:
-                    obj_mapping[i] = hoi_ds_object_index[obj.split()[-1]]
-                except KeyError:
-                    try:
-                        for j, o in enumerate(hoi_ds_objects):
-                            if obj == o.split()[-1]:
-                                obj_mapping[i] = j
-                                break
-                    except KeyError:
-                        continue
-        obj_mapping[np.array(self.human_classes)] = subj_mapping[np.array(self.human_classes)]
-
-        # Relationship triplets to interactions
-        relationships = np.unique(self.triplets, axis=0)
-        mapped_relationships = np.stack([subj_mapping[relationships[:, 0]],
-                                         pred_mapping[relationships[:, 1]],
-                                         obj_mapping[relationships[:, 2]]],
-                                        axis=1)
-        valid_relationships = mapped_relationships[np.all(mapped_relationships >= 0, axis=1), 1:]
-        if valid_relationships.shape[0] > 0:
-            relationships_to_interactions = np.unique(valid_relationships, axis=0)
-        else:
-            relationships_to_interactions = valid_relationships
-        return relationships_to_interactions
-
-
-class HCVRD(ExtSource):
-    def __init__(self):
-        super().__init__()
-
-    @property
-    def human_classes(self) -> List[int]:
-        hcvrd_human_classes = {'person', 'man', 'woman', 'boy', 'girl', 'child', 'kid', 'baby',
-                               'audience', 'catcher', 'carrier', 'classroom', 'couple', 'cowboy', 'crowd', 'driver', 'friend',
-                               'guard', 'little girl', 'player', 'rider', 'skateboarder', 'skater', 'skier', 'small child',
-                               'snowboarder', 'surfer', 'tennis player'}
-        return [self.object_index[o] for o in sorted(hcvrd_human_classes)]
-
-    def _load(self):
-        with open(os.path.join(cfg.data_root, 'HCVRD', 'final_data.json'), 'r') as f:
-            d = json.load(f)  # {'im_id': [{'predicate', 'object', 'subject', 'obj_box', 'sub_box'}]}
-        triplets_str = [[reldata['subject'], reldata['predicate'].strip(), reldata['object']] for imdata in d.values() for reldata in imdata]
-        return triplets_str
-
-
-class VG(ExtSource):
-    def __init__(self):
-        super().__init__()
-
-    def _load(self):
-        try:
-            with open(os.path.join(cfg.cache_root, 'vg_parsed_rels.pkl'), 'rb') as f:
-                triplets_str = pickle.load(f)
-        except FileNotFoundError:
-            raise
-        return triplets_str
-
-
-class ImSitu(ExtSource):
-    def __init__(self):
-        super().__init__()
-
-    @property
-    def human_classes(self) -> List[int]:
-        imsitu_human_classes = {s for s, p, o in self.triplet_str}
-        return [self.object_index[o] for o in sorted(imsitu_human_classes)]
-
-    def _load(self):
-        try:
-            with open(os.path.join(cfg.cache_root, 'imsitu_triplets.pkl'), 'rb') as f:
-                triplets_str = pickle.load(f)
-        except FileNotFoundError:
-            raise
-        return triplets_str
-
-
-class VGCaptions(ExtSource):
-    def __init__(self, required_words=None):
-        self.required_words = required_words
-        super().__init__()
-
-    def _load(self):
-        try:
-            with open(os.path.join(cfg.cache_root, 'vg_triplets.pkl'), 'rb') as f:
-                triplets_str = pickle.load(f)
-        except FileNotFoundError:
-            raise
-        return triplets_str
-
-
-class ActivityNetCaptions(ExtSource):
-    def __init__(self, required_words=None):
-        self.required_words = required_words
-        super().__init__()
-
-    def _load(self):
-        try:
-            with open(os.path.join(cfg.cache_root, 'anet_triplets.pkl'), 'rb') as f:
-                triplets_str = pickle.load(f)
-        except FileNotFoundError:
-            raise
-
-        triplets_str = [[s, p, o] for s, p, o in triplets_str if s and p and o]
-        return triplets_str
-
-
-def _get_interactions_from_ext_src(hoi_ds: HoiDataset, include_vg=True):
-    hcvrd = HCVRD()
-    imsitu = ImSitu()
-    anet = ActivityNetCaptions()
-
-    hcvrd_interactions = hcvrd.get_interactions_for(hoi_ds)
-    imsitu_interactions = imsitu.get_interactions_for(hoi_ds)
-    anet_interactions = anet.get_interactions_for(hoi_ds)
-
-    ext_interactions = np.concatenate([hcvrd_interactions, imsitu_interactions, anet_interactions], axis=0)
-
-    if include_vg:
-        vg = VG()
-        vg_interactions = vg.get_interactions_for(hoi_ds)
-
-        # vgcap = VGCaptions()
-        # vgcap_interactions = vgcap.get_interactions_for(hoi_ds)
-
-        with open(os.path.join(cfg.cache_root, 'vg_action_objects.pkl'), 'rb') as f:
-            objs_per_actions = pickle.load(f)
-        vgcap_interactions = np.array(
-            [[hoi_ds.action_index.get(a, -1), hoi_ds.object_index.get(o, -1)] for a, objs in objs_per_actions.items() for o in objs])
-        vgcap_interactions = vgcap_interactions[np.all(vgcap_interactions >= 0, axis=1), :]
-
-        ext_interactions = np.concatenate([ext_interactions, vg_interactions, vgcap_interactions], axis=0)
-    return ext_interactions
+from lib.models.mine_interactions import get_interactions_from_ext_src, check_hoi_coverage
 
 
 def get_states_vars_from_hake(hh, sym):
@@ -280,7 +51,7 @@ def get_states_vars_from_hake(hh, sym):
 
 def get_vcoco_graphs(vcoco_split: VCocoSplit, source_ds: HoiDataset, to_torch=True, verbose=False, sym=True, ext_interactions=False):
     if ext_interactions:
-        ext_interactions = _get_interactions_from_ext_src(hoi_ds=vcoco_split.full_dataset)
+        ext_interactions = get_interactions_from_ext_src(hoi_ds=vcoco_split.full_dataset)
         _ext_objects_per_action = {}
         for a, o in ext_interactions:
             _ext_objects_per_action.setdefault(a, set()).add(o)
@@ -421,7 +192,7 @@ def get_cocoa_graphs(cocoa_split: CocoaSplit, source_ds: HoiDataset, to_torch=Tr
         return assignment
 
     if ext_interactions:
-        ext_interactions = _get_interactions_from_ext_src(hoi_ds=cocoa_split.full_dataset)
+        ext_interactions = get_interactions_from_ext_src(hoi_ds=cocoa_split.full_dataset)
         _ext_objects_per_action = {}
         for a, o in ext_interactions:
             _ext_objects_per_action.setdefault(a, set()).add(o)
@@ -490,77 +261,31 @@ def get_cocoa_graphs(cocoa_split: CocoaSplit, source_ds: HoiDataset, to_torch=Tr
     return oa_adj, act_obj_state_cooccs, num_cocoa_ao_pairs_in_src
 
 
-def _check(hoi_ds: HoiDataset):
-    def get_seen_interactions(hoi_ds: HoiDataset):
-        inds_dict = pickle.load(open(cfg.seen_classes_file, 'rb'))
-        obj_inds = inds_dict['train'].get('obj', np.arange(hoi_ds.num_objects))
-        act_inds = inds_dict['train']['act']
-        interactions_inds = np.setdiff1d(np.unique(hoi_ds.oa_to_interaction[obj_inds, :][:, act_inds]), np.array([-1]))
-        interactions = hoi_ds.interactions[interactions_inds, :]
-        return interactions
+def get_hicococoa_graphs(hc_split: HicoCocoaSplit, to_torch=True, verbose=False, ext_interactions=False, **kwargs):
+    hc_ds = hc_split.full_dataset
 
-    def get_uncovered_interactions(hoi_ds_interactions, *ext_interactions, include_null=False):
-        hoi_ds_set = {tuple(x) for x in hoi_ds_interactions}
-        ext_set = {tuple(x) for e_inters in ext_interactions for x in e_inters}
-        _uncovered_interactions = np.array(sorted([x for x in hoi_ds_set - ext_set]))
-        if not include_null:
-            _uncovered_interactions = _uncovered_interactions[_uncovered_interactions[:, 0] > 0, :]
-        return _uncovered_interactions
+    if ext_interactions:
+        mined_interactions = get_interactions_from_ext_src(hoi_ds=hc_ds)
+        interactions = np.unique(np.concatenate([hc_split.interactions, mined_interactions], axis=0), axis=0)
+        if verbose:
+            check_hoi_coverage(hoi_ds=hc_ds, tr_interactions=hc_split.interactions, ext_interactions=mined_interactions)
+    else:
+        interactions = hc_ds.interactions
 
-    def compute_isolated(all_interactions, uncovered_interactions, idx, num_classes):
-        ids, _num_links = np.unique(all_interactions[:, idx], return_counts=True)
-        num_links = np.zeros(num_classes)
-        num_links[ids] = _num_links
-        for x in uncovered_interactions[:, idx]:
-            num_links[x] -= 1
-        assert np.all(num_links >= 0)
-        isolated = np.flatnonzero(num_links == 0)
-        return isolated
-
-    def get_interactions(triplet_ds: ExtSource, hoi_ds: HoiDataset, hoi_ds_train_interactions, triplet_ds_name):
-        triplet_ds_interactions = triplet_ds.get_interactions_for(hoi_ds)
-        print('%20s' % triplet_ds_name, get_uncovered_interactions(hoi_ds.interactions, triplet_ds_interactions).shape[0])
-        print('%20s' % f'{triplet_ds_name}-train', get_uncovered_interactions(hoi_ds.interactions, hoi_ds_train_interactions,
-                                                                              triplet_ds_interactions).shape[0])
-        return triplet_ds_interactions
-
-    print(f'Num total interactions: {hoi_ds.num_interactions}')
-
-    train_interactions = get_seen_interactions(hoi_ds)
-    print('%15s' % 'Train', get_uncovered_interactions(hoi_ds.interactions, train_interactions).shape[0])
-
-    mined_interactions = []
-    mined_interactions += [get_interactions(triplet_ds=VG(), hoi_ds=hoi_ds, hoi_ds_train_interactions=train_interactions, triplet_ds_name='VG')]
-    mined_interactions += [get_interactions(triplet_ds=HCVRD(), hoi_ds=hoi_ds, hoi_ds_train_interactions=train_interactions, triplet_ds_name='HCVRD')]
-    mined_interactions += [get_interactions(triplet_ds=ImSitu(), hoi_ds=hoi_ds, hoi_ds_train_interactions=train_interactions,
-                                            triplet_ds_name='ImSitu')]
-    mined_interactions += [get_interactions(triplet_ds=ActivityNetCaptions(), hoi_ds=hoi_ds, hoi_ds_train_interactions=train_interactions,
-                                            triplet_ds_name='ANet')]
-    mined_interactions += [get_interactions(triplet_ds=VGCaptions(), hoi_ds=hoi_ds, hoi_ds_train_interactions=train_interactions,
-                                            triplet_ds_name='VGCaptions')]
-    uncovered_interactions = get_uncovered_interactions(hoi_ds.interactions, train_interactions, *mined_interactions)
-    print('All', uncovered_interactions.shape[0])
-
-    isolated_actions = compute_isolated(hoi_ds.interactions, uncovered_interactions, idx=0, num_classes=hoi_ds.num_actions)
-    print(f'Isolated actions ({len(isolated_actions)}):', [hoi_ds.actions[a] for a in isolated_actions])
-    # ['hop_on', 'hunt', 'lose', 'pay', 'point', 'sign', 'stab', 'toast'].
-    # 'hop_on' and 'sign' (and maybe 'point') could probably be found through synonyms. The others are too niche/hard to find (hunt, stab, lose)
-    # or even borderline incorrect ("toast wine glass").
-
-    isolated_objects = compute_isolated(hoi_ds.interactions, uncovered_interactions, idx=1, num_classes=hoi_ds.num_objects)
-    print(f'Isolated objects ({len(isolated_objects)}):', [hoi_ds.objects[o] for o in isolated_objects])
+    oa_adj = np.zeros([hc_ds.num_objects, hc_ds.num_actions], dtype=np.float32)
+    oa_adj[interactions[:, 1], interactions[:, 0]] = 1
+    oa_adj[:, 0] = 0
+    if to_torch:
+        oa_adj = torch.from_numpy(oa_adj)
+    return oa_adj, None, None
 
 
 def main():
     test = 4
     if test == 0:
-        cfg.ds = 'hico'
-        cfg.seen = 4
-        _check(HicoDetHake())
+        raise NotImplementedError
     elif test == 1:
-        cfg.ds = 'vcoco'
-        cfg.seenf = 1
-        _check(VCoco())
+        raise NotImplementedError
     elif test == 2:
         vcoco = VCoco()
         hh = HicoDetHake()

@@ -1,16 +1,11 @@
-import json
-import os
-import pickle
 from typing import Dict, List
 
 import numpy as np
-from scipy.io import loadmat
 
-from config import cfg
+from lib.dataset.cocoa import Cocoa
+from lib.dataset.hicodet_hake import HicoDetHake
 from lib.dataset.hoi_dataset import HoiDataset, GTImgData
 from lib.dataset.hoi_dataset_split import HoiDatasetSplit, HoiInstancesFeatProvider
-from lib.dataset.hicodet_hake import HicoDetHake
-from lib.dataset.cocoa import Cocoa
 from lib.dataset.utils import Dims, get_obj_mapping
 
 
@@ -30,7 +25,7 @@ class HicoCocoaSplit(HoiDatasetSplit):
                                             **kwargs)
         else:
             assert self.split == 'test'
-            return HoiInstancesFeatProvider(ds=self, ds_name='cocoa-all', obj_mapping=np.arange(self.full_dataset.num_objects),
+            return HoiInstancesFeatProvider(ds=self, ds_name='cocoaall', obj_mapping=np.arange(self.full_dataset.num_objects),
                                             label_mapping=self.full_dataset.cocoa_interaction_mapping,
                                             **kwargs)
 
@@ -87,7 +82,7 @@ class HicoCocoa(HoiDataset):
         self.cocoa_interaction_mapping = cocoa_mapping
 
     def get_img_data(self, split) -> List[GTImgData]:
-        raise NotImplementedError
+        return self._split_gt_data[split]
 
     def get_img_path(self, split, fname):
         if split == 'train':
