@@ -47,7 +47,7 @@ class HicoCocoa(HoiDataset):
     def __init__(self):
 
         hico = HicoDetHake()
-        cocoa = Cocoa(all_as_test=True)
+        cocoa = Cocoa(all_as_test=True, fix_solos=False)
 
         hico_objects = hico.objects
         cocoa_objects = [o.replace(' ', '_') for o in cocoa.objects]
@@ -73,9 +73,29 @@ class HicoCocoa(HoiDataset):
         cocoa_mapping = np.array([interaction_index[c] for c in cocoa_interactions_str_pair])  # same
 
         self._split_gt_data = {'train': [x._replace(labels=hico_mapping[x.labels], box_classes=hico_to_coco_obj_mapping[x.box_classes])
-                                         for x in hico.get_img_data('train')],
-                               'test': [x._replace(labels=cocoa_mapping[x.labels]) for x in cocoa.get_img_data('test')],
+                                         for x in hico.get_img_data('train')]
                                }  # type: Dict[str, List[GTImgData]]
+        cocoa_data = []
+        for x in cocoa.get_img_data('test'):
+            valid_ho_pairs = ~np.isnan(x.ho_pairs).any(axis=1)
+            if ~valid_ho_pairs.any():
+                ho_pairs = hoi_labels = None
+            else:
+                ho_pairs = x.ho_pairs[valid_ho_pairs]
+                assert ~np.isnan(ho_pairs).any() and np.all(ho_pairs >= 0)
+                ho_pairs = ho_pairs.astype(np.int)
+
+                act_labels = x.labels[valid_ho_pairs]
+                obj_label_per_pair = x.box_classes[ho_pairs[:, 1]]
+                cocoa_hoi_labels = cocoa.oa_to_interaction[obj_label_per_pair, act_labels]
+                assert np.all(cocoa_hoi_labels >= 0)
+                hoi_labels = cocoa_mapping[cocoa_hoi_labels]
+
+            assert x.ps_labels is None
+            img_data = x._replace(ho_pairs=ho_pairs, labels=hoi_labels)
+            cocoa_data.append(img_data)
+        self._split_gt_data['test'] = cocoa_data
+
         self.hico = hico
         self.cocoa = cocoa
         self.hico_interaction_mapping = hico_mapping

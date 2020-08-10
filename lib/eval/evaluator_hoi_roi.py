@@ -31,7 +31,6 @@ class EvaluatorHoiRoi(Evaluator):
 
     def _init(self):
         self.gt_labels = []
-        self.predict_scores = []
         self.pred_gt_assignment_per_hoi = []
         self.gt_count = 0
 
@@ -74,22 +73,25 @@ class EvaluatorHoiRoi(Evaluator):
         assert len(predictions) == self.dataset_split.num_images, (len(predictions), self.dataset_split.num_images)
 
         Timer.get('Eval epoch').tic()
+
+        Timer.get('Eval epoch', 'Conversion').tic()
+        predictions = [Prediction(p) for p in predictions]
+        Timer.get('Eval epoch', 'Conversion').toc()
+
         Timer.get('Eval epoch', 'Predictions').tic()
-        for i, res in enumerate(predictions):
-            prediction = Prediction(res)
-            self.match_prediction_to_gt(self.gt_data[i], prediction)
+        for i, p in enumerate(predictions):
+            self.match_prediction_to_gt(self.gt_data[i], p)
         Timer.get('Eval epoch', 'Predictions').toc()
 
         Timer.get('Eval epoch', 'Metrics').tic()
-        self.compute_metrics()
+        self.compute_metrics(predictions=predictions)
         Timer.get('Eval epoch', 'Metrics').toc()
 
         Timer.get('Eval epoch').toc()
 
-    def compute_metrics(self):
+    def compute_metrics(self, predictions: List[Prediction]):
         gt_hoi_labels = np.concatenate(self.gt_labels, axis=0)
         assert self.gt_count == gt_hoi_labels.shape[0]
-        predict_hoi_scores = np.concatenate(self.predict_scores, axis=0)
         pred_gt_ho_assignment = np.concatenate(self.pred_gt_assignment_per_hoi, axis=0)
 
         gt_hoi_classes_count = Counter(gt_hoi_labels.tolist())
@@ -101,8 +103,9 @@ class EvaluatorHoiRoi(Evaluator):
             if num_gt_hois == 0:
                 continue
 
-            p_hoi_scores = predict_hoi_scores[:, j]
+            p_hoi_scores = np.concatenate([p.output_scores[:, j] for p in predictions if p.output_scores is not None], axis=0)
             p_gt_ho_assignment = pred_gt_ho_assignment[:, j]
+            assert p_hoi_scores.shape == p_gt_ho_assignment.shape
             if self.hoi_score_thr is not None:
                 inds = (p_hoi_scores >= self.hoi_score_thr)
                 p_hoi_scores = p_hoi_scores[inds]
@@ -129,26 +132,15 @@ class EvaluatorHoiRoi(Evaluator):
 
         predict_boxes = np.zeros((0, 4))
         predict_ho_pairs = np.zeros((0, 2), dtype=np.int)
-        predict_hoi_scores = np.zeros([0, self.full_dataset.num_interactions])
         if prediction.obj_boxes is not None:
             predict_boxes = prediction.obj_boxes
             if prediction.ho_pairs is not None:
                 predict_ho_pairs = prediction.ho_pairs
-
-                if self.full_dataset.labels_are_actions:
-                    predict_action_scores = prediction.output_scores
-                    predict_hoi_obj_scores = prediction.hoi_obj_scores
-
-                    predict_hoi_scores = np.empty([predict_ho_pairs.shape[0], self.full_dataset.num_interactions])
-                    for iid, (pid, oid) in enumerate(self.full_dataset.interactions):
-                        predict_hoi_scores[:, iid] = predict_hoi_obj_scores[:, oid] * predict_action_scores[:, pid]
-                else:
-                    predict_hoi_scores = prediction.output_scores
         else:
             assert prediction.ho_pairs is None
 
         pred_gt_ious = compute_ious(predict_boxes, gt_boxes)
-        pred_gt_assignment_per_hoi = np.full((predict_hoi_scores.shape[0], self.full_dataset.num_interactions), fill_value=-1, dtype=np.int)
+        pred_gt_assignment_per_hoi = np.full((predict_ho_pairs.shape[0], self.full_dataset.num_interactions), fill_value=-1, dtype=np.int)
         for predict_idx, (ph, po) in enumerate(predict_ho_pairs):
             gt_pair_ious = np.zeros(num_gt_hois)
             for gtidx, (gh, go) in enumerate(gt_ho_pairs):
@@ -165,7 +157,6 @@ class EvaluatorHoiRoi(Evaluator):
                 pred_gt_assignment_per_hoi[predict_idx, gt_hoi_assignments] = gt_ho_ids[gt_assignments]
 
         self.gt_labels.append(gt_labels)
-        self.predict_scores.append(predict_hoi_scores)
         self.pred_gt_assignment_per_hoi.append(pred_gt_assignment_per_hoi)
 
     @staticmethod

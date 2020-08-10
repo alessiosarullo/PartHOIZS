@@ -149,6 +149,7 @@ def main():
                                                is_obj_human[:, None].astype(np.int)
                                                ], axis=1)
                     all_ho_infos.append(ho_infos)
+                    assert all([x is None or x.dtype == np.int8 for x in [labels, pstate_labels]])
                     if labels is not None:
                         all_labels.append(labels)
                     if obj_labels is not None:

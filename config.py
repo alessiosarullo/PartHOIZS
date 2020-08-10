@@ -49,6 +49,7 @@ class Configs:
 
         # Features
         self.feat_norm = False
+        self.unionbb_feats = False  # TODO not currently implemented
 
         # Dataset
         self.ds = ''
@@ -91,7 +92,7 @@ class Configs:
         self.awslt = 0.5
         self.awsl_uonly = False
 
-        # Graph regularisation  # FIXME
+        # Graph regularisation
         self.agreg = 0.0
 
         # Interactiveness (actually more like spatial configuration: interactiveness detection is one possible usage)
@@ -139,7 +140,6 @@ class Configs:
         self.lr_gamma = 0.1
         self.lr_decay_period = 0
         self.lr_warmup = 0
-        self.c_lr_gcn = 0.0
 
         # Batch
         self.batch_size = 64

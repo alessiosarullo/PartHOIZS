@@ -150,11 +150,6 @@ class Launcher:
 
     def get_optim(self):
         params = self.detector.parameters()
-        if cfg.c_lr_gcn != 0:
-            assert not cfg.resume, 'Not implemented'
-            gcn_params = [p for n, p in self.detector.named_parameters() if 'gcn' in n and p.requires_grad]
-            non_gcn_params = [p for n, p in self.detector.named_parameters() if 'gcn' not in n and p.requires_grad]
-            params = [{'params': gcn_params, 'lr': cfg.lr * cfg.c_lr_gcn}, {'params': non_gcn_params}]
         if cfg.resume:
             params = [{'params': p, 'initial_lr': cfg.lr} for p in self.detector.parameters() if p.requires_grad]
 
@@ -194,7 +189,8 @@ class Launcher:
 
         try:
             lowest_val_metric = np.inf
-            for epoch in range(self.start_epoch, cfg.num_epochs):
+            last_epoch = cfg.num_epochs
+            for epoch in range(self.start_epoch, last_epoch):
                 print('Epoch %d start.' % epoch)
                 self.detector.train()
                 self.loss_epoch(epoch, train_loader, training_stats, optimizer)
@@ -223,13 +219,16 @@ class Launcher:
                                 'state_dict': self.detector.state_dict()},
                                cfg.best_model_file)
 
-                if epoch % cfg.eval_interval == 0 or epoch + 1 == cfg.num_epochs:
+                if epoch % cfg.eval_interval == 0 or epoch + 1 == last_epoch:
                     test_predictions = self.compute_predictions(epoch_idx=epoch, data_loader=test_loader, stats=test_stats)
-                    self.eval_epoch(predictions=test_predictions, epoch_idx=epoch, dataset=self.test_split, stats=test_stats)
+                    self.eval_epoch(predictions=test_predictions, epoch_idx=epoch, eval_split=self.test_split, stats=test_stats)
+                    if epoch + 1 < last_epoch:
+                        del test_predictions
 
                 # if any([pg['lr'] <= 1e-6 for pg in optimizer.param_groups]):
                 #     print('Exiting training early.', flush=True)
                 #     break
+            assert test_predictions is not None
             Timer.get().print()
         finally:
             training_stats.close_tensorboard_logger()
@@ -335,7 +334,7 @@ class Launcher:
             stats.epoch_toc()
         return all_predictions
 
-    def eval_epoch(self, predictions, epoch_idx, dataset: HoiDatasetSplit, stats: RunningStats, metric_prefix='', do_tic=False):
+    def eval_epoch(self, predictions, epoch_idx, eval_split: HoiDatasetSplit, stats: RunningStats, metric_prefix='', do_tic=False):
         self.detector.eval()
         if do_tic:
             stats.epoch_tic()
@@ -349,21 +348,21 @@ class Launcher:
                 break
 
         metric_dict = {}
-        if do_part_eval and isinstance(dataset, HicoDetHakeSplit):
+        if do_part_eval and isinstance(eval_split, HicoDetHakeSplit):
             print('Part states:')
-            part_evaluator = EvaluatorHicoDetHakePartROI(dataset)
+            part_evaluator = EvaluatorHicoDetHakePartROI(eval_split)
             part_evaluator.evaluate_predictions(predictions)
             part_metric_dict = {f'Part_{k}': v for k, v in part_evaluator.output_metrics().items()}
             metric_dict.update(part_metric_dict)
 
-            null_classes = np.flatnonzero([states[-1] for states in dataset.full_dataset.states_per_part]).tolist()
+            null_classes = np.flatnonzero([states[-1] for states in eval_split.full_dataset.states_per_part]).tolist()
             part_interactiveness_metric_dict = part_evaluator.output_metrics(compute_pos=False, to_keep=null_classes)
             part_interactiveness_metric_dict = {f'Part_interactiveness_{k}': v for k, v in part_interactiveness_metric_dict.items()}
             assert not (set(part_interactiveness_metric_dict.keys()) & set(metric_dict.keys()))
             metric_dict.update(part_interactiveness_metric_dict)
 
         EVAL_TYPES = ['interactions', 'actions']
-        eval_type = 'interactions' if cfg.ds == 'hh' or cfg.ds == 'cocoa' else 'actions'
+        eval_type = 'actions' if eval_split.full_dataset.labels_are_actions else 'interactions'
         assert eval_type in EVAL_TYPES
 
         if cfg.seenf >= 0:
@@ -380,24 +379,24 @@ class Launcher:
 
         if do_hoi_eval:
             if cfg.vceval:
-                assert isinstance(dataset, VCocoSplit)
+                assert isinstance(eval_split, VCocoSplit)
                 evaluator = VCOCOeval(vsrl_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'vcoco', 'vcoco_test.json'),
                                       coco_annot_file=os.path.join(cfg.data_root, 'V-COCO', 'instances_vcoco_all_2014.json'),
                                       split_file=os.path.join(cfg.data_root, 'V-COCO', 'splits', 'vcoco_test.ids')
                                       )
                 det_file = os.path.join(cfg.output_path, 'vcoco_pred.pkl')
-                pkl_from_predictions(dict_predictions=predictions, dataset=dataset, filename=det_file)
-                evaluator._do_eval(det_file, ovr_thresh=0.5, seen_acts_str=[dataset.actions[i] for i in seen] if seen is not None else None)
+                pkl_from_predictions(dict_predictions=predictions, dataset=eval_split, filename=det_file)
+                evaluator._do_eval(det_file, ovr_thresh=0.5, seen_acts_str=[eval_split.actions[i] for i in seen] if seen is not None else None)
             else:
                 print('All:')
                 if eval_type == 'interactions':
-                    evaluator = EvaluatorHoiRoi(dataset)
+                    evaluator = EvaluatorHoiRoi(eval_split)
                     null_classes = np.flatnonzero(self.test_split.full_dataset.interactions[:, 0] == 0).tolist()
                 elif eval_type == 'actions':
-                    evaluator = EvaluatorVCocoROI(dataset)
+                    evaluator = EvaluatorVCocoROI(eval_split)
                     null_classes = [0]
                 else:
-                    raise ValueError(f'Eval type must be one of f{EVAL_TYPES}, but it is {eval_type}.')
+                    raise ValueError(f'Eval type must be one of f{EVAL_TYPES}, but it is "{eval_type}".')
                 evaluator.evaluate_predictions(predictions)
                 hoi_metric_dict = evaluator.output_metrics()
                 hoi_metric_dict = {f'{k}': v for k, v in hoi_metric_dict.items()}
@@ -418,6 +417,21 @@ class Launcher:
 
                     print('Unseen:')
                     detailed_metric_dicts.append({f'zs_{k}': v for k, v in evaluator.output_metrics(to_keep=sorted(unseen)).items()})
+
+                    if isinstance(eval_split, HicoCocoaSplit):
+                        # Sanity check
+                        assert sorted(self.train_split.objects) == eval_split.full_dataset.hico.objects
+                        assert self.train_split.actions == eval_split.full_dataset.hico.actions
+                        assert [f'{self.train_split.full_dataset.actions[a]} {self.train_split.full_dataset.objects[o]}'
+                                for a, o in self.train_split.interactions] == sorted(eval_split.full_dataset.hico.interactions_str)
+
+                        unseen_acts = np.setdiff1d(np.arange(self.train_split.full_dataset.num_actions), self.train_split.seen_actions)
+                        unseen_w_unseen_acts = np.setdiff1d(self.train_split.full_dataset.oa_to_interaction[:, unseen_acts], [-1])
+                        assert np.all(unseen_w_unseen_acts >= 0) and np.setdiff1d(unseen_w_unseen_acts, unseen).size == 0
+
+                        print('Unseen (with unseen actions):')
+                        detailed_metric_dicts.append({f'zs_unseen_acts_{k}': v
+                                                      for k, v in evaluator.output_metrics(to_keep=sorted(unseen_w_unseen_acts)).items()})
 
                     for d in detailed_metric_dicts:
                         for k, v in d.items():
@@ -455,7 +469,7 @@ class Launcher:
         except FileNotFoundError:
             predictions = self.compute_predictions(epoch_idx=None, data_loader=data_loader, stats=stats)
 
-        self.eval_epoch(predictions=predictions, epoch_idx=None, dataset=ds_split, stats=stats)
+        self.eval_epoch(predictions=predictions, epoch_idx=None, eval_split=ds_split, stats=stats)
         return predictions
 
     def data_loader_generator(self, data_loader, epoch_idx):

@@ -566,7 +566,7 @@ def get_interactions_from_ext_src(filename: str = None, hoi_ds: HoiDataset = Non
     if return_breakdown:
         return mined_interactions
     else:
-        mined_interactions = np.unique(np.concatenate(mined_interactions.values(), axis=0), axis=0)
+        mined_interactions = np.unique(np.concatenate(list(mined_interactions.values()), axis=0), axis=0)
         return mined_interactions
 
 
@@ -585,7 +585,7 @@ def check_hoi_coverage(hoi_ds: HoiDataset, tr_interactions: np.ndarray, ext_inte
         isolated_in_known = np.setdiff1d(np.arange(num_classes), known_interactions[:, idx])
         return isolated_in_ds, isolated_in_known
 
-    print(f'Num total interactions: {hoi_ds.num_interactions}')
+    print(f'Num total interactions: {hoi_ds.num_interactions}.')
     print('Uncovered:')
     print(f' - {"Train":<25s}', get_uncovered_interactions(hoi_ds.interactions, tr_interactions).shape[0])
 

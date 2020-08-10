@@ -15,6 +15,7 @@ from lib.models.abstract_model import AbstractModel, Prediction
 from lib.models.branches import Cache, AbstractModule, \
     PartStateBranch, FrozenPartStateBranch, \
     ActZSBranch, FromPartStateLogitsBranch, \
+    ActZSGCNBranch, \
     AttBranch, LogicBranch
 from lib.models.graphs import get_vcoco_graphs, get_cocoa_graphs, get_hicococoa_graphs
 
@@ -31,7 +32,7 @@ class AbstractTriBranchModel(AbstractModel):
         self.part_dataset = HicoDetHake()  # type: Union[None, HicoDetHake]
         self.zs_enabled = (cfg.seenf >= 0)
         self.part_only = part_only
-        self.predict_act = True
+        self.predict_act = dataset.full_dataset.labels_are_actions
 
         self.repr_dims = [cfg.repr_dim0, cfg.repr_dim1]
 
@@ -95,6 +96,15 @@ class AbstractTriBranchModel(AbstractModel):
 
     def _predict(self, x: Minibatch, inference) -> Prediction:
         prediction = Prediction()
+
+        # Ouput of pre-trained modules
+        if len(x.ex_data) > 2:
+            prediction.ho_pairs = x.ex_data[2]
+            prediction.obj_boxes = x.ex_data[3]
+            obj_scores = x.ex_data[4]
+            prediction.hoi_obj_scores = obj_scores[prediction.ho_pairs[:, 1], :]
+
+        # Output of the part/action/hoi modules
         if not cfg.no_part:
             prediction.part_state_scores = self.branches['part'](x, inference)
         if not self.part_only:
@@ -103,8 +113,9 @@ class AbstractTriBranchModel(AbstractModel):
 
             if 'obj' in self.branches:
                 obj_scores = self.branches['obj'](x, inference)
-                prediction.hoi_obj_scores = obj_scores
-                hoi_scores.append(obj_scores[:, interactions[:, 1]])
+                prediction.hoi_obj_scores = obj_scores  # overwrite pre-trained module's prediction
+            if prediction.hoi_obj_scores is not None:
+                hoi_scores.append(prediction.hoi_obj_scores[:, interactions[:, 1]])
 
             if 'act' in self.branches:
                 act_scores = self.branches['act'](x, inference)
@@ -122,12 +133,7 @@ class AbstractTriBranchModel(AbstractModel):
             else:
                 prediction.output_scores = np.prod(np.stack(hoi_scores, axis=0), axis=0)
 
-        if len(x.ex_data) > 2:
-            prediction.ho_pairs = x.ex_data[2]
-            prediction.obj_boxes = x.ex_data[3]
-            if prediction.hoi_obj_scores is None:
-                obj_scores = x.ex_data[4]
-                prediction.hoi_obj_scores = obj_scores[prediction.ho_pairs[:, 1], :]
+        if prediction.ho_pairs is not None:
             assert prediction.output_scores is None or prediction.ho_pairs.shape[0] == prediction.output_scores.shape[0]
             assert prediction.part_state_scores is None or prediction.ho_pairs.shape[0] == prediction.part_state_scores.shape[0]
         return prediction
@@ -156,6 +162,19 @@ class ActModel(AbstractTriBranchModel):
     def _init_act_branch(self):
         self.branches['act'] = ActZSBranch(use_pstates=not (cfg.no_part or cfg.no_psf),
                                            dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
+
+
+class GCNModel(AbstractTriBranchModel):
+    @classmethod
+    def get_cline_name(cls):
+        return 'gcn'
+
+    def __init__(self, dataset: HoiDatasetSplit, **kwargs):
+        super().__init__(dataset, **kwargs)
+
+    def _init_act_branch(self):
+        assert cfg.unionbb_feats
+        self.branches['act'] = ActZSGCNBranch(dataset=self.dataset, cache=self.cache, repr_dims=self.repr_dims)
 
 
 class LogicActModel(ActModel):

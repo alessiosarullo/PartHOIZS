@@ -14,12 +14,14 @@ class Evaluator:
         raise NotImplementedError
 
     def _process_gt(self, gt_entry: GTImgData):
-        gt_boxes = gt_entry.boxes.astype(np.float, copy=False)
+        gt_boxes = gt_entry.boxes
         gt_ho_pairs = gt_entry.ho_pairs
         gt_labels = gt_entry.labels
 
         if gt_boxes is None:
             gt_boxes = np.zeros((0, 4), dtype=np.float)
+        else:
+            gt_boxes = gt_boxes.astype(np.float, copy=False)
 
         if gt_ho_pairs is None:
             assert gt_labels is None

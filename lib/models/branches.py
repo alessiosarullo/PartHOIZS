@@ -115,13 +115,18 @@ class AbstractBranch(AbstractModule):
             assert im_data[1].shape[0] == N
 
         if person_data is not None:
-            ppl_boxes, ppl_feats, coco_kps, kp_boxes, kp_feats = person_data[:5]
-            N = N if N is not None else kp_feats.shape[0]
+            ppl_boxes, ppl_feats, coco_kps, kp_boxes = person_data[:4]
+            N = N if N is not None else ppl_boxes.shape[0]
             assert ppl_boxes.shape == (N, P, 4), ppl_boxes.shape
             assert ppl_feats.shape == (N, P, F_kp), ppl_feats.shape
             assert coco_kps.shape == (N, P, K, 3), coco_kps.shape
             assert kp_boxes.shape == (N, P, B, 5), kp_boxes.shape
-            assert kp_feats.shape == (N, P, B, F_kp), kp_feats.shape
+
+            kp_feats = person_data[4]
+            if kp_feats is None:
+                assert cfg.no_part
+            else:
+                assert kp_feats.shape == (N, P, B, F_kp), kp_feats.shape
 
         if obj_data is not None:
             obj_boxes, obj_scores, obj_feats = obj_data[:3]
@@ -357,6 +362,7 @@ class PartStateBranch(AbstractBranch):
         ex_feats = x.ex_data[1]
         ppl_boxes, _, _, kp_boxes, kp_feats = x.person_data[:5]
         obj_scores = x.obj_data[1]
+        assert kp_feats is not None
 
         P, M, B = self.dims.P, self.dims.M, self.dims.B
         N = ppl_boxes.shape[0]
@@ -447,7 +453,7 @@ class ActZSBranch(AbstractBranch):
         self.ld = self._get_label_data()
 
         self.input_vec_dim, self.input_vec_f = self._get_input_vec_func()
-        self._add_mlp(name='repr', input_dim=self.input_vec_dim, output_dim=self.repr_dims[0])
+        self._add_mlp(name='act_repr', input_dim=self.input_vec_dim, output_dim=self.repr_dims[0])
         self._add_linear_layer(name='dir', input_dim=self.repr_dims[0], output_dim=self.ld.num_classes)
 
         if self.zs_enabled:
@@ -524,8 +530,8 @@ class ActZSBranch(AbstractBranch):
         return torch.sigmoid(output).cpu().numpy()
 
     def _forward(self, x: Minibatch):
-        repr = self.repr_mlps['repr'](self.input_vec_f(x))
-        logits = repr @ self.linear_predictors['dir']
+        vrepr = self.repr_mlps['act_repr'](self.input_vec_f(x))
+        logits = vrepr @ self.linear_predictors['dir']
         return logits
 
     def get_unseen_labels(self, labels: Labels):
@@ -543,7 +549,112 @@ class ActZSBranch(AbstractBranch):
 
         ws_labels = feasible_similar_acts_per_obj.max(dim=1)[0]
         unseen_class_labels = ws_labels[:, self.unseen_inds]
+        assert torch.numel(unseen_class_labels) > 0
         return unseen_class_labels.detach()
+
+
+class ActZSGCNBranch(ActZSBranch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(use_pstates=False, *args, **kwargs)
+        self._add_mlp(name='ho_subj_repr', input_dim=self.dims.F_kp, output_dim=self.repr_dims[0])
+        self._add_mlp(name='ho_obj_repr', input_dim=self.dims.F_kp + self.dims.O, output_dim=self.repr_dims[0])
+        self._add_mlp(name='act_repr', input_dim=self.dims.F_ex, output_dim=self.repr_dims[0], override=True)
+        # Note: if ZS is not enabled, the GCN is not used, so it is a bit of a misnomer...
+        if self.zs_enabled:
+            gc_emb_dim = 1024
+            gc_latent_dim = 1024
+            self.affordance_gcn = BipartiteGCN(adj_block=self.cache.oa_adj, input_dim=gc_emb_dim,
+                                               gc_dims=[(gc_emb_dim + gc_latent_dim) // 2, gc_latent_dim])
+            self._add_mlp(name=f'oa_gcn_predictor', input_dim=gc_latent_dim, hidden_dim=(gc_latent_dim + self.repr_dims[0]) // 2,
+                          output_dim=self.repr_dims[0], dropout_p=0.5)
+
+            self.vv_adj = nn.Parameter((self.cache.oa_adj.t() @ self.cache.oa_adj).clamp(max=1).bool(), requires_grad=False)
+
+    def _get_losses(self, x: Minibatch, output, **kwargs):
+        dir_logits = output[0]
+        labels = self.ld.label_f(x.labels)
+        assert dir_logits.shape[1] == labels.shape[1]
+
+        losses = {}
+        if self.zs_enabled:
+            gcn_logits = output[1]
+            assert gcn_logits.shape[1] == labels.shape[1]
+            seen_inds = self.seen_inds
+            if not cfg.train_null_act:
+                seen_inds = seen_inds[1:]
+            losses[f'act_loss_seen'] = bce_loss(dir_logits[:, seen_inds], labels[:, seen_inds]) + \
+                                       bce_loss(gcn_logits[:, seen_inds], labels[:, seen_inds])
+
+            if self.unseen_loss_coeff > 0:
+                unseen_class_labels = self.get_unseen_labels(x.labels)
+                losses[f'act_loss_unseen'] = self.unseen_loss_coeff * bce_loss(gcn_logits[:, self.unseen_inds], unseen_class_labels)
+
+            try:
+                losses['act_reg_loss'] = self.cache['reg_loss']
+            except KeyError:
+                pass
+        else:
+            if cfg.train_null_act:
+                losses[f'act_loss_seen'] = bce_loss(dir_logits, labels)
+            else:
+                losses[f'act_loss_seen'] = bce_loss(dir_logits[:, 1:], labels[:, 1:])
+        return losses
+
+    def _predict(self, x: Minibatch, output, **kwargs):
+        dir_logits, gcn_logits = output
+        logits = dir_logits
+        if self.zs_enabled:
+            logits[:, self.unseen_inds] = gcn_logits[:, self.unseen_inds]
+        return torch.sigmoid(logits).cpu().numpy()
+
+    def _forward(self, x: Minibatch):
+        ho_subj_repr = self.repr_mlps['ho_subj_repr'](x.person_data[1].squeeze(dim=1))
+        ho_obj_repr = self.repr_mlps['ho_obj_repr'](torch.cat([x.obj_data[2].squeeze(dim=1),  x.obj_data[1].squeeze(dim=1)], dim=1))
+        act_repr = self.repr_mlps['act_repr'](x.ex_data[1])
+        hoi_repr = ho_subj_repr + ho_obj_repr + act_repr
+
+        dir_logits = hoi_repr @ self.linear_predictors['dir']
+
+        if self.zs_enabled and cfg.agreg > 0:
+            _, gcn_act_class_embs = self.affordance_gcn()
+            gcn_predictors = self.repr_mlps[f'oa_gcn_predictor'](gcn_act_class_embs).t()
+            gcn_logits = hoi_repr @ gcn_predictors
+            if cfg.agreg > 0:
+                margin = 0.3  # FIXME?
+                adj = self.vv_adj
+                seen = self.seen_inds
+                unseen = self.unseen_inds
+                predictors = self.linear_predictors['dir'].t()
+
+                # # Detach seen classes predictors
+                # all_predictors = predictors
+                # predictors_seen = predictors[seen, :].detach()
+                # predictors_unseen = predictors[unseen, :]
+                # predictors = torch.cat([predictors_seen, predictors_unseen], dim=0)[torch.sort(torch.cat([seen, unseen]))[1]]
+                # assert (all_predictors[seen] == predictors[seen]).all() and (all_predictors[unseen] == predictors[unseen]).all()
+
+                predictors_norm = nn.functional.normalize(predictors, dim=1)
+                predictors_sim = predictors_norm @ predictors_norm.t()
+                null = ~adj.any(dim=1)
+                arange = torch.arange(predictors_sim.shape[0])
+
+                predictors_sim_diff = predictors_sim.unsqueeze(dim=2) - predictors_sim.unsqueeze(dim=1)
+                reg_loss_mat = (margin - predictors_sim_diff).clamp(min=0)
+                reg_loss_mat[~adj.unsqueeze(dim=2).expand_as(reg_loss_mat)] = 0
+                reg_loss_mat[adj.unsqueeze(dim=1).expand_as(reg_loss_mat)] = 0
+                reg_loss_mat[arange, arange, :] = 0
+                reg_loss_mat[arange, :, arange] = 0
+                reg_loss_mat[:, arange, arange] = 0
+                reg_loss_mat[null, :, :] = 0
+                reg_loss_mat[:, null, :] = 0
+                reg_loss_mat[:, :, null] = 0
+
+                reg_loss_mat = reg_loss_mat[unseen, :, :]
+                reg_loss = reg_loss_mat.sum() / (reg_loss_mat != 0).sum().item()
+                self.cache['reg_loss'] = cfg.agreg * reg_loss
+        else:
+            gcn_logits = None
+        return dir_logits, gcn_logits
 
 
 class FromPartStateLogitsBranch(ActZSBranch):
@@ -621,7 +732,7 @@ class LogicBranch(ActZSBranch):
         return torch.sigmoid(logits).cpu().numpy()
 
     def _forward(self, x: Minibatch):
-        dir_logits = self.repr_mlps['repr'](self.input_vec_f(x)) @ self.linear_predictors['dir']
+        dir_logits = self.repr_mlps['act_repr'](self.input_vec_f(x)) @ self.linear_predictors['dir']
         nec_logits = self.repr_mlps['necessary'](self.input_vec_f(x)) @ self.linear_predictors['necessary']
         suf_logits = self.repr_mlps['sufficient'](self.input_vec_f(x)) @ self.linear_predictors['sufficient']
         return dir_logits, nec_logits, suf_logits

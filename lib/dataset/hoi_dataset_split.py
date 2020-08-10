@@ -58,26 +58,35 @@ class HoiDatasetSplit(AbstractHoiDatasetSplit):
     def __init__(self, split, full_dataset: HoiDataset, object_inds=None, action_inds=None, interaction_inds=None,
                  load_precomputed_data=False, **kwargs):
         super().__init__(split)
-        assert interaction_inds is None or (object_inds is None and action_inds is None)
         self.full_dataset = full_dataset  # type: HoiDataset
         self.all_gt_img_data = self.full_dataset.get_img_data(self.split)
 
-        object_inds = sorted(object_inds) if object_inds is not None else range(self.full_dataset.num_objects)
-        self.objects = [full_dataset.objects[i] for i in object_inds]
-        self.seen_objects = np.array(object_inds, dtype=np.int)
-
-        action_inds = sorted(action_inds) if action_inds is not None else range(self.full_dataset.num_actions)
-        self.actions = [full_dataset.actions[i] for i in action_inds]
-        self.seen_actions = np.array(action_inds, dtype=np.int)
-
         if interaction_inds is None:
+            object_inds = sorted(object_inds) if object_inds is not None else range(self.full_dataset.num_objects)
+            self.objects = [full_dataset.objects[i] for i in object_inds]
+            self.seen_objects = np.array(object_inds, dtype=np.int)
+
+            action_inds = sorted(action_inds) if action_inds is not None else range(self.full_dataset.num_actions)
+            self.actions = [full_dataset.actions[i] for i in action_inds]
+            self.seen_actions = np.array(action_inds, dtype=np.int)
+
             seen_op_mat = self.full_dataset.oa_to_interaction[self.seen_objects, :][:, self.seen_actions]
             seen_interactions = set(np.unique(seen_op_mat).tolist()) - {-1}
+            self.seen_interactions = np.array(sorted(seen_interactions), dtype=np.int)
+            self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
         else:
+            assert object_inds is None and action_inds is None
             assert isinstance(interaction_inds, list)
-            seen_interactions = set(interaction_inds)
-        self.seen_interactions = np.array(sorted(seen_interactions), dtype=np.int)
-        self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
+            self.seen_interactions = np.array(sorted(set(interaction_inds)), dtype=np.int)
+            self.interactions = self.full_dataset.interactions[self.seen_interactions, :]  # original action and object inds
+
+            object_inds = np.setdiff1d(np.unique(self.interactions[:, 1]), np.array([-1]))
+            self.objects = [full_dataset.objects[i] for i in object_inds]
+            self.seen_objects = np.array(object_inds, dtype=np.int)
+
+            action_inds = np.unique(self.interactions[:, 0])
+            self.actions = [full_dataset.actions[i] for i in action_inds]
+            self.seen_actions = np.array(action_inds, dtype=np.int)
 
         if self.split == 'train':
             if object_inds is not None:
@@ -208,11 +217,14 @@ class FeatProvider(torch.utils.data.Dataset):
         except AttributeError:
             pass
         if not no_feats:
-            self.hake_kp_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats')
             self.person_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'person_feats')
-            self.kp_net_dim = self.hake_kp_feats.shape[-1]
-            assert self.kp_net_dim == self.person_feats.shape[-1]
-            assert self.hake_kp_feats.dtype == np.float32
+            self.kp_net_dim = self.person_feats.shape[-1]
+            if cfg.no_part:
+                self.hake_kp_feats = None
+            else:
+                self.hake_kp_feats = PrecomputedFilesHandler.get(self.keypoints_fn, 'kp_feats')
+                assert self.kp_net_dim == self.hake_kp_feats.shape[-1]
+                assert self.hake_kp_feats.dtype == np.float32
         assert np.all(np.min(self.coco_kps[:, :, :2], axis=1) >= self.person_boxes[:, :2])
         assert np.all(np.max(self.coco_kps[:, :, :2], axis=1) <= self.person_boxes[:, 2:4])
         assert self.person_boxes.dtype == self.coco_kps.dtype == self.person_scores.dtype == self.hake_kp_boxes.dtype == np.float32
@@ -220,7 +232,10 @@ class FeatProvider(torch.utils.data.Dataset):
         #####################################################
         # Whole examples
         #####################################################
-        self.ex_feat_dim = self.kp_net_dim + self.obj_feats_dim
+        if cfg.unionbb_feats:
+            self.ex_feat_dim = None  # will be set later
+        else:
+            self.ex_feat_dim = self.kp_net_dim + self.obj_feats_dim
 
         #############################################################################################################################
         # Cache variables to speed up loading
@@ -382,8 +397,15 @@ class HoiInstancesFeatProvider(FeatProvider):
         if cfg.include_bg_only:
             raise NotImplementedError('Background-only images would only increase the number of possible negatives to sample from.')
         super().__init__(ds_name=ds_name, max_ppl=0, max_obj=0, *args, **kwargs)
-        self.hoi_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}__hoi_pairs_{self.split}.h5')
-        ho_infos = PrecomputedFilesHandler.get(self.hoi_fn, 'ho_infos', load_in_memory=True)
+        hoi_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}__hoi_pairs_{self.split}.h5')
+        ho_infos = PrecomputedFilesHandler.get(hoi_fn, 'ho_infos', load_in_memory=True)
+        if cfg.unionbb_feats:
+            union_fn = os.path.join(cfg.cache_root, f'precomputed_{ds_name}union__mask_rcnn_X_101_32x8d_FPN_3x_{self.split}.h5')
+            union_fname_ids = PrecomputedFilesHandler.get(union_fn, 'fname_ids', load_in_memory=True)
+            assert np.all(union_fname_ids == ho_infos[:, 0])
+            self.union_bbs = PrecomputedFilesHandler.get(union_fn, 'union_bb', load_in_memory=True)
+            self.union_bb_feats = PrecomputedFilesHandler.get(union_fn, 'union_bb_feats')
+            self.ex_feat_dim = self.union_bb_feats.shape[1]
 
         fname_ids_to_img_idx = {imdata['fname_id']: im_idx for im_idx, imdata in enumerate(self.img_data_cache)}
         ho_im_idxs = np.array([fname_ids_to_img_idx[fname_id] for fname_id in ho_infos[:, 0]])
@@ -420,35 +442,43 @@ class HoiInstancesFeatProvider(FeatProvider):
         self.ho_infos = ho_infos[valid_hois]  # see above for format
 
         if self.split != 'test':
-            tmp_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            tmp_labels = PrecomputedFilesHandler.get(hoi_fn, 'labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+            tmp_labels = tmp_labels.astype(np.int8, copy=False)
             _labels = tmp_labels
             if self.label_mapping is not None:
                 assert self.label_mapping.size == tmp_labels.shape[1]
                 num_all = self.full_dataset.num_actions if self.full_dataset.labels_are_actions else self.full_dataset.num_interactions
-                _labels = np.zeros((tmp_labels.shape[0], num_all))
+                _labels = np.zeros((tmp_labels.shape[0], num_all), dtype=_labels.dtype)
                 _labels[:, self.label_mapping] = tmp_labels
             assert self.ho_infos.shape[0] == _labels.shape[0]
             if self.full_dataset.labels_are_actions:
-                self.hoi_obj_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+                self.hoi_obj_labels = PrecomputedFilesHandler.get(hoi_fn, 'obj_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
             positives, negatives = self._get_pos_neg_mask(_labels)
             assert np.all(positives ^ negatives)
             print(f'Negatives per positive (before ZS): {np.sum(negatives) / np.sum(positives)}.')
             self.labels = _labels
 
-            try:
-                self.pstate_labels = PrecomputedFilesHandler.get(self.hoi_fn, 'pstate_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
-            except KeyError:
-                self.pstate_labels = None
+            self.pstate_labels = None
+            if not cfg.no_part:
+                try:
+                    pstate_labels = PrecomputedFilesHandler.get(hoi_fn, 'pstate_labels', load_in_memory=True)[valid_hois]  # type: np.ndarray
+                    self.pstate_labels = pstate_labels.astype(np.int8, copy=False)
+                except KeyError:
+                    pass
 
             self.labels = self._filter_zs_labels(self.labels)
-            self.non_empty_inds = np.flatnonzero(np.any(self.labels, axis=1))
+            non_empty_mask = np.any(self.labels, axis=1)
+            self.non_empty_inds = np.flatnonzero(non_empty_mask)
             # non_empty_imgs = np.unique(self.ho_infos[:, 0])
 
             # Compute masks for positives and negatives. This has to be done again to take into account possibly removed ZS labels.
             # Note: negatives = background, as opposed to not being labelled at all.
             positives, negatives = self._get_pos_neg_mask(self.labels)
-            assert np.all((positives ^ negatives) | (~self.labels.any(axis=1)))  # Sanity check: either positive, negative or unlabelled
-            assert np.all((positives ^ negatives)[self.non_empty_inds])  # Sanity check: if labelled, either positive or negative
+            labelled = positives ^ negatives
+            unlabelled = ~non_empty_mask
+            assert np.all(labelled ^ unlabelled)  # Sanity check: either positive, negative or unlabelled
+            assert np.all(labelled[self.non_empty_inds])  # Sanity check ab
+            # out labelled images
             print(f'Negatives per positive (after ZS): {np.sum(negatives) / np.sum(positives)}.')
             self.positives_mask = positives
             self.negatives_mask = negatives
@@ -463,8 +493,12 @@ class HoiInstancesFeatProvider(FeatProvider):
             # negatives = np.any(labels[:, null_interactions], axis=1)
 
             # Done like this to save memory
-            negatives = np.array([row[null_interactions].any() for row in labels])
-            positives = ~negatives
+            positives, negatives = [], []
+            for row in labels:
+                positives.append(row[~null_interactions].any())
+                negatives.append(row[null_interactions].any())
+            positives = np.array(positives)
+            negatives = np.array(negatives)
         return positives, negatives
 
     def __len__(self):
@@ -582,7 +616,11 @@ class HoiInstancesFeatProvider(FeatProvider):
         ppl_feats = self.person_feats[person_mask, ...][p_inv_index, ...]
         coco_kps = self.coco_kps[person_inds]
         kp_boxes = self.hake_kp_boxes[person_inds]
-        kp_feats = self.hake_kp_feats[person_mask, ...][p_inv_index, ...]
+        if self.hake_kp_feats is not None:
+            kp_feats = self.hake_kp_feats[person_mask, ...][p_inv_index, ...]
+            t_kp_feats = torch.from_numpy(kp_feats).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
+        else:
+            t_kp_feats = None
 
         obj_boxes = np.full((obj_inds.shape[0], self.obj_boxes.shape[1]), fill_value=np.nan)
         obj_scores = np.full((obj_inds.shape[0], self.obj_scores.shape[1]), fill_value=np.nan)
@@ -605,7 +643,6 @@ class HoiInstancesFeatProvider(FeatProvider):
         t_ppl_feats = torch.from_numpy(ppl_feats).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
         t_coco_kps = torch.from_numpy(coco_kps).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
         t_kp_boxes = torch.from_numpy(kp_boxes).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
-        t_kp_feats = torch.from_numpy(kp_feats).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
         t_obj_boxes = torch.from_numpy(obj_boxes).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
         t_obj_scores = torch.from_numpy(obj_scores).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
         t_obj_feats = torch.from_numpy(obj_feats).unsqueeze(dim=1).to(device=device, dtype=torch.float32)
@@ -622,7 +659,10 @@ class HoiInstancesFeatProvider(FeatProvider):
 
         # Example data
         ex_ids = [f'{self.split}_ex{idx}' for idx in idxs]
-        ex_feats = torch.cat([t_ppl_feats.squeeze(dim=1), t_obj_feats.squeeze(dim=1)], dim=1)
+        if cfg.unionbb_feats:
+            ex_feats = torch.from_numpy(self.union_bb_feats[idxs, :]).to(device=device, dtype=torch.float32)
+        else:
+            ex_feats = torch.cat([t_ppl_feats.squeeze(dim=1), t_obj_feats.squeeze(dim=1)], dim=1)
 
         labels = obj_labels_onehot = pstate_labels = None
         if self.split != 'test':

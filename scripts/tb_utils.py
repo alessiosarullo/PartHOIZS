@@ -7,10 +7,10 @@ from torch.utils.tensorboard import SummaryWriter
 from scripts.utils import get_runs_data
 
 
-def aggregate_tb_runs(fname, runs):
-    print(fname)
+def aggregate_tb_runs(dirname, runs):
+    print(dirname)
     print(runs)
-    os.makedirs(fname, exist_ok=True)
+    os.makedirs(dirname, exist_ok=True)
 
     runs_data = get_runs_data(runs)
     values_per_tag = runs_data['Test']['values']
@@ -19,7 +19,7 @@ def aggregate_tb_runs(fname, runs):
     aggr_ops = {'mean': np.mean,
                 'std': np.std}
     for aggr_op_name, aggr_op in aggr_ops.items():
-        tblogger = SummaryWriter(os.path.join(fname, 'tboard/Test', aggr_op_name))
+        tblogger = SummaryWriter(os.path.join(dirname, 'tboard/Test', aggr_op_name))
         for tag, values in values_per_tag.items():
             aggr_value_per_timestep = aggr_op(values, axis=0)
             for i, aggr_value in enumerate(aggr_value_per_timestep):
@@ -28,10 +28,10 @@ def aggregate_tb_runs(fname, runs):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('fname')
+    parser.add_argument('dirname')
     parser.add_argument('runs', nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    fname = args.fname
+    dirname = args.dirname
     runs = args.runs
 
     # try:  # PyCharm debugging
@@ -43,7 +43,7 @@ def main():
     #     print('Remote debugging failed.')
     #     raise
 
-    aggregate_tb_runs(fname=fname, runs=runs)
+    aggregate_tb_runs(dirname=dirname, runs=runs)
 
 
 if __name__ == '__main__':

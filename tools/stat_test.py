@@ -28,7 +28,11 @@ def main():
 
     # Result obtained at the lowest validation action loss.
     assert np.all(exp_data['Val']['steps'] == exp_data['Test']['steps'])
-    best_val_loss_step_per_run = np.argmin(exp_data['Val']['values']['Act_loss'], axis=1)
+    val_values = exp_data['Val']['values']
+    try:
+        best_val_loss_step_per_run = np.argmin(val_values['Act_loss'], axis=1)
+    except KeyError:
+        best_val_loss_step_per_run = np.argmin(val_values['Act_loss_seen'] + val_values.get('Act_loss_unseen', 0), axis=1)
     test_data = exp_data['Test']['values'][measure]
     test_accuracy_per_run = test_data[np.arange(test_data.shape[0]), best_val_loss_step_per_run]
     sp = max([len(r) for r in runs])

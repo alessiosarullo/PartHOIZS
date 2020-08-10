@@ -103,7 +103,7 @@ class HumObjPairsModule:
 
         # Assign human-object pairs, action labels and object labels
         ho_pairs = np.concatenate([ho_fg_pairs, ho_bg_pairs], axis=0).astype(np.int, copy=False)  # [sub_ind, obj_ind]
-        action_labels = action_labels_mat[ho_pairs[:, 0], ho_pairs[:, 1]].astype(np.float32, copy=False)  # multi-label
+        action_labels = action_labels_mat[ho_pairs[:, 0], ho_pairs[:, 1]].astype(np.int8, copy=False)  # multi-label
         obj_labels = gt_label_of_predicted_boxes[ho_pairs[:, 1]].astype(np.float32, copy=False)
         neg_box_labels = (obj_labels < 0)
         assert np.all(action_labels[neg_box_labels, 0]) and not np.any(action_labels[neg_box_labels, 1:])  # obj=-1 => null action
@@ -114,9 +114,9 @@ class HumObjPairsModule:
             hoi_objs = obj_labels[hoi_inds].astype(np.int)
             hoi_labels = self.full_dataset.oa_to_interaction[hoi_objs, acts]
             assert np.all(hoi_labels >= 0)
-            hoi_labels_onehot = np.zeros((action_labels.shape[0], self.full_dataset.num_interactions))
+            hoi_labels_onehot = np.zeros((action_labels.shape[0], self.full_dataset.num_interactions), dtype=np.int8)
             hoi_labels_onehot[hoi_inds, hoi_labels] = 1
-            labels = hoi_labels
+            labels = hoi_labels_onehot
         else:
             labels = action_labels
 
@@ -129,7 +129,8 @@ class HumObjPairsModule:
                         if head_predict_ind != tail_predict_ind:
                             pstate_labels_mat[head_predict_ind, tail_predict_ind, :] += ps_labels
             pstate_labels_mat = np.minimum(pstate_labels_mat, 1)
-            pstate_labels = pstate_labels_mat[ho_pairs[:, 0], ho_pairs[:, 1]].astype(np.float32, copy=False)  # multi-label
+            pstate_labels = pstate_labels_mat[ho_pairs[:, 0], ho_pairs[:, 1]].astype(np.int8, copy=False)  # multi-label
         else:
             pstate_labels = None
+        assert all([x is None or x.dtype == np.int8 for x in [labels, pstate_labels]])
         return ho_pairs, labels, obj_labels, pstate_labels

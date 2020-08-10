@@ -73,7 +73,7 @@ def run_single_trial(launcher, output_dir, dataset, net, num_runs, arg_fname, ru
         date_time_s = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         exp_dir = os.path.join(output_dir, f'{date_time_s}_AGGR{num_runs}')
         os.makedirs(exp_dir)
-        aggregate_tb_runs(fname=exp_dir, runs=runs)
+        aggregate_tb_runs(dirname=exp_dir, runs=runs)
 
     return np.nanmean(np.array(losses)).item()
 

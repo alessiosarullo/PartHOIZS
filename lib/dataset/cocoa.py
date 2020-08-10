@@ -37,7 +37,7 @@ class CocoaSplit(HoiDatasetSplit):
 
 
 class Cocoa(HoiDataset):
-    def __init__(self, all_as_test=False):
+    def __init__(self, all_as_test=False, eliminate_duplicate=True, fix_solos=False):
         driver = CocoaDriver()  # type: CocoaDriver
 
         object_classes = driver.objects
@@ -46,21 +46,27 @@ class Cocoa(HoiDataset):
         null_action = driver.null_interaction
         action_classes = driver.actions
 
+        solo_mapping = {a: action_classes.index(a[:-5]) for a in action_classes if a.endswith('_solo')}  # type: Dict[str, int]
         interactions = set()
         for img_anns in driver.hoi_annotations.values():
             for im_ann in img_anns:
                 obj_id = im_ann['object_id']
                 if obj_id < 0:
                     continue
-                for a in im_ann['actions']:
-                    if action_classes[a].endswith('_solo'):
-                        continue
+                im_ann_actions_copy = [a for a in im_ann['actions']]
+                for i, a in enumerate(im_ann_actions_copy):
+                    if fix_solos and action_classes[a].endswith('_solo'):
+                        a = solo_mapping[action_classes[a]]
+                        im_ann['actions'][i] = a
                     interactions.add((a, driver.object_annotations[obj_id]['obj']))
         for j in range(len(object_classes)):
             interactions.add((0, j))  # make sure it is possible NOT to interact with any object
         interactions = np.unique(np.array(sorted(interactions)), axis=0)
 
         super().__init__(object_classes=object_classes, action_classes=action_classes, null_action=null_action, interactions=interactions)
+        self.eliminate_duplicates = eliminate_duplicate
+        if eliminate_duplicate:
+            print('COCO-a: eliminating duplicates.')
 
         data_file_format = os.path.join(driver.data_dir, 'peyre', '%s.ids')
         if all_as_test:
@@ -130,6 +136,14 @@ class Cocoa(HoiDataset):
             im_box_classes = np.array(im_box_classes)
             im_ho_pairs = np.stack(im_ho_pairs, axis=0)
             im_actions = np.array(im_actions)
+            if self.eliminate_duplicates:
+                im_ho_pairs_actions = np.concatenate([im_ho_pairs, im_actions[:, None]], axis=1)
+                nans = np.isnan(im_ho_pairs_actions)
+                assert ~nans[:, [0, 2]].any() and np.all(im_ho_pairs_actions[~nans] >= 0)
+                im_ho_pairs_actions[nans] = -1
+                _, u_inds = np.unique(im_ho_pairs_actions, axis=0, return_index=True)
+                im_ho_pairs = im_ho_pairs[u_inds, :]
+                im_actions = im_actions[u_inds]
 
             split_data.append(GTImgData(filename=driver.image_infos[img_id]['file_name'],
                                         img_size=np.array([driver.image_infos[img_id]['width'], driver.image_infos[img_id]['height']]),
