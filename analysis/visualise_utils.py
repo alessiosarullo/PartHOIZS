@@ -198,6 +198,8 @@ class Visualizer:
             np.sqrt(self.output.height * self.output.width) // 90, 10 // scale
         )
 
+        self._colormap = colormap(rgb=True, maximum=1)
+
     def overlay_instances(
             self,
             *,
@@ -205,6 +207,7 @@ class Visualizer:
             labels=None,
             color=None,
             alpha=0.5,
+            font_scale=None,
             **kwargs
     ) -> VisImage:
         """
@@ -228,12 +231,7 @@ class Visualizer:
         # Display in largest to smallest order to reduce occlusion.
         boxes, labels = self.sort_by_area(boxes, labels)
 
-        if color is None:
-            cmap = colormap(rgb=True, maximum=1)
-            assigned_colors = [cmap[i % len(cmap)] for i in range(num_instances)]
-        else:
-            assigned_colors = [color] * num_instances
-
+        assigned_colors = self._get_colors(color=color, num_instances=num_instances, **kwargs)
         for i in range(num_instances):
             color = assigned_colors[i]
             if boxes is not None:
@@ -246,6 +244,10 @@ class Visualizer:
                     x0, y0, x1, y1 = boxes[i]
                     text_pos = (x0, y0)  # if drawing boxes, put text on the box corner.
                     horiz_align = "left"
+                    if kwargs.get('demo3', False):  # ad-hoc for demo3
+                        del kwargs['demo3']
+                        text_pos = ((x1 + x0) / 2, y0 - 30)
+                        horiz_align = "center"
                 else:
                     continue  # drawing the box confidence for keypoints isn't very useful.
                 # for small objects, draw text at the side to avoid occlusion
@@ -258,25 +260,26 @@ class Visualizer:
                         text_pos = (x1, y0)
                     else:
                         text_pos = (x0, y1)
+                        # text_pos = (x0 + 0.7*(x1 - x0), y1)  # ad-hoc for demo1
 
                 height_ratio = (y1 - y0) / np.sqrt(self.output.height * self.output.width)
-                lighter_color = self._change_color_brightness(color, brightness_factor=0.7)
                 font_size = (
                         np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2)
                         * 0.5
-                        * self._default_font_size
+                        * (font_scale or self._default_font_size)
                 )
                 self.draw_text(
                     labels[i],
                     text_pos,
-                    color=lighter_color,
+                    color=color,
                     horizontal_alignment=horiz_align,
                     font_size=font_size,
+                    **kwargs
                 )
 
         return self.output
 
-    def draw_keypoints(self, keypoints, print_names=False):
+    def draw_keypoints(self, keypoints, print_names=False, **kwargs):
         """
         Draws keypoints of an instance. Each keypoint (of the same person) has a different colour.
 
@@ -288,8 +291,7 @@ class Visualizer:
             output (VisImage): image object with visualizations.
         """
         keypoint_names = COCO_PERSON_KEYPOINT_NAMES_ABBRV
-        cmap = colormap(rgb=True, maximum=1)
-        assigned_colors = [cmap[i % len(keypoint_names)] for i in range(len(keypoints))]
+        assigned_colors = self._get_colors(color=None, num_instances=len(keypoint_names), **kwargs)
 
         for idx, keypoint in enumerate(keypoints):
             # draw keypoint
@@ -297,15 +299,28 @@ class Visualizer:
             if prob > self.kp_thr:
                 kp_color = assigned_colors[idx]
                 self.draw_circle((x, y), color=kp_color)
-                if keypoint_names:
+                if keypoint_names and print_names:
                     keypoint_name = keypoint_names[idx]
 
+                    pos = (x + 2, y + 2)
+                    if kwargs.get('demo4kptext', False):
+                        if keypoint_name in ['RS']:
+                            pos = x - 48, y
+                        if keypoint_name in ['RE']:
+                            pos = x - 50, y
+                        if keypoint_name in ['LE']:
+                            pos = x + 2, y - 17
+                        if keypoint_name in ['RI']:
+                            pos = x - 55, y - 15
+                        if keypoint_name in ['LI']:
+                            pos = x - 25, y - 20
                     self.draw_text(
                         keypoint_name + ' ' + f'{prob:.2f}'.lstrip('0'),
-                        (x, y),
+                        pos,
                         color=kp_color,
                         horizontal_alignment='left',
                         font_size=self._default_font_size,
+                        **kwargs
                     )
         return self.output
 
@@ -377,8 +392,10 @@ class Visualizer:
             *,
             font_size=None,
             color="g",
+            color_brightness_factor=0.7,
             horizontal_alignment="center",
-            rotation=0
+            rotation=0,
+            **kwargs
     ):
         """
         Args:
@@ -398,8 +415,12 @@ class Visualizer:
             font_size = self._default_font_size
 
         # since the text background is dark, we don't want the text to be dark
+        if color_brightness_factor:
+            color = self._change_color_brightness(color, brightness_factor=color_brightness_factor)
         color = np.maximum(list(mplc.to_rgb(color)), 0.2)
-        color[np.argmax(color)] = max(0.8, np.max(color))
+        # color[np.argmax(color)] = max(0.8, np.max(color))
+        cmax = np.max(color)
+        color = np.array([c if c < cmax else max(0.8, c) for c in color])
 
         x, y = position
         self.output.ax.text(
@@ -417,7 +438,7 @@ class Visualizer:
         )
         return self.output
 
-    def draw_box(self, box_coord, alpha=0.5, edge_color="g", line_style="-"):
+    def draw_box(self, box_coord, alpha=0.5, edge_color="g", line_style="-", **kwargs):
         """
         Args:
             box_coord (tuple): a tuple containing x0, y0, x1, y1 coordinates, where x0 and y0
@@ -500,9 +521,61 @@ class Visualizer:
         )
         return self.output
 
+    def draw_vr_arrow(self, box1, box2, color, linewidth=None, text=None, font_size=None, **kwargs):
+        if linewidth is None:
+            linewidth = self._default_font_size / 3
+        linewidth = max(linewidth, 1)
+        width = linewidth * self.output.scale
+
+        c1 = (box1[:2] + box1[2:]) / 2
+        c2 = (box2[:2] + box2[2:]) / 2
+        c2_head = c1 + 0.8 * (c2 - c1)
+
+        color = self._get_colors(color)[0]
+
+        self.output.ax.add_line(
+            lines.Line2D(
+                [c1[0], c2_head[0]],
+                [c1[1], c2_head[1]],
+                linewidth=width,
+                color=color,
+                **kwargs
+            )
+        )
+        self.output.ax.arrow(
+            *c2_head, *(c2 - c2_head),
+            width=width,
+            color=color,
+            length_includes_head=True,
+            head_width=5 * width,
+        )
+        if text is not None:
+            self.draw_text(
+                text,
+                (c2 + c1) / 2,
+                color=color,
+                font_size=font_size,
+            )
+        return self.output
+
     """
     Internal methods:
     """
+
+    def _get_colors(self, color, num_instances=1, **kwargs):
+        if color is None or isinstance(color, int):
+            cmap = self._colormap
+            starting_color = color or 0
+            if kwargs.get('demo4skipgrey', False):
+                cmap = [x for i, x in enumerate(cmap) if i not in [7, 8]]
+                assigned_colors = [cmap[(starting_color + i) % len(cmap)] for i in range(num_instances)]
+            else:
+                assigned_colors = [cmap[(starting_color + i) % len(cmap)] for i in range(num_instances)]
+        elif isinstance(color, str):
+            assigned_colors = [mplc.to_rgb(color)]
+        else:
+            assigned_colors = [color] * num_instances
+        return assigned_colors
 
     def _change_color_brightness(self, color, brightness_factor):
         """

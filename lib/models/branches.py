@@ -573,7 +573,9 @@ class ActZSGCNBranch(ActZSBranch):
     def _get_losses(self, x: Minibatch, output, **kwargs):
         dir_logits = output[0]
         labels = self.ld.label_f(x.labels)
-        assert dir_logits.shape[1] == labels.shape[1]
+
+        if not cfg.no_dir:
+            assert dir_logits.shape[1] == labels.shape[1]
 
         losses = {}
         if self.zs_enabled:
@@ -582,8 +584,10 @@ class ActZSGCNBranch(ActZSBranch):
             seen_inds = self.seen_inds
             if not cfg.train_null_act:
                 seen_inds = seen_inds[1:]
-            losses[f'act_loss_seen'] = bce_loss(dir_logits[:, seen_inds], labels[:, seen_inds]) + \
-                                       bce_loss(gcn_logits[:, seen_inds], labels[:, seen_inds])
+
+            losses[f'act_loss_seen'] = bce_loss(gcn_logits[:, seen_inds], labels[:, seen_inds])
+            if not cfg.no_dir:
+                losses[f'act_loss_seen'] += bce_loss(dir_logits[:, seen_inds], labels[:, seen_inds])
 
             if self.unseen_loss_coeff > 0:
                 unseen_class_labels = self.get_unseen_labels(x.labels)
@@ -594,6 +598,7 @@ class ActZSGCNBranch(ActZSBranch):
             except KeyError:
                 pass
         else:
+            assert not cfg.no_dir
             if cfg.train_null_act:
                 losses[f'act_loss_seen'] = bce_loss(dir_logits, labels)
             else:
@@ -613,7 +618,11 @@ class ActZSGCNBranch(ActZSBranch):
         act_repr = self.repr_mlps['act_repr'](x.ex_data[1])
         hoi_repr = ho_subj_repr + ho_obj_repr + act_repr
 
-        dir_logits = hoi_repr @ self.linear_predictors['dir']
+        if cfg.no_dir:
+            dir_logits = None
+        else:
+            dir_logits = hoi_repr @ self.linear_predictors['dir']
+
 
         if self.zs_enabled and cfg.agreg > 0:
             _, gcn_act_class_embs = self.affordance_gcn()
