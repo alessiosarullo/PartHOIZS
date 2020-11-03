@@ -628,8 +628,7 @@ class ActZSGCNBranch(ActZSBranch):
         else:
             dir_logits = hoi_repr @ self.linear_predictors['dir']
 
-
-        if self.zs_enabled and cfg.agreg > 0:
+        if self.zs_enabled:
             _, gcn_act_class_embs = self.affordance_gcn()
             gcn_predictors = self.repr_mlps[f'oa_gcn_predictor'](gcn_act_class_embs).t()
             gcn_logits = hoi_repr @ gcn_predictors
