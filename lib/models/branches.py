@@ -607,9 +607,14 @@ class ActZSGCNBranch(ActZSBranch):
 
     def _predict(self, x: Minibatch, output, **kwargs):
         dir_logits, gcn_logits = output
-        logits = dir_logits
-        if self.zs_enabled:
-            logits[:, self.unseen_inds] = gcn_logits[:, self.unseen_inds]
+        if cfg.no_dir:
+            assert dir_logits is None and gcn_logits is not None
+            logits = gcn_logits
+        else:
+            assert dir_logits is not None
+            logits = dir_logits
+            if self.zs_enabled:
+                logits[:, self.unseen_inds] = gcn_logits[:, self.unseen_inds]
         return torch.sigmoid(logits).cpu().numpy()
 
     def _forward(self, x: Minibatch):
