@@ -90,9 +90,10 @@ class Launcher:
                         pass
                 raise
 
-        with open(cfg.prediction_file, 'wb') as f:
-            pickle.dump(predictions, f)
-        print('Wrote results to %s.' % cfg.prediction_file)
+        # FIXME Commented to reduce space usage
+        # with open(cfg.prediction_file, 'wb') as f:
+        #     pickle.dump(predictions, f)
+        # print('Wrote results to %s.' % cfg.prediction_file)
 
         return lowest_val_loss
 
